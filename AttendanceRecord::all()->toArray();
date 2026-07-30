@@ -1,0 +1,28 @@
+[90m= [39m[34;4mIlluminate\Database\Eloquent\Collection[39;24m {#7985
+    [34mall[39m: [
+      [34;4mApp\Models\AttendanceRecord[39;24m {#7987
+        [34mid[39m: [35m1[39m,
+        [34memployee_id[39m: [35m21[39m,
+        [34mdate[39m: [32m"[39m[32m2026-07-15 00:00:00[39m[32m"[39m,
+        [34mclock_in[39m: [32m"[39m[32m2026-07-15 13:56:36[39m[32m"[39m,
+        [34mclock_out[39m: [36mnull[39m,
+        [34mlate_minutes[39m: [35m296[39m,
+        [34mearly_leave_minutes[39m: [35m0[39m,
+        [34mstatus[39m: [32m"[39m[32mlate[39m[32m"[39m,
+        [34mcreated_at[39m: [32m"[39m[32m2026-07-15 13:56:36[39m[32m"[39m,
+        [34mupdated_at[39m: [32m"[39m[32m2026-07-15 13:56:36[39m[32m"[39m,
+      },
+      [34;4mApp\Models\AttendanceRecord[39;24m {#7988
+        [34mid[39m: [35m2[39m,
+        [34memployee_id[39m: [35m21[39m,
+        [34mdate[39m: [32m"[39m[32m2026-07-15 00:00:00[39m[32m"[39m,
+        [34mclock_in[39m: [32m"[39m[32m2026-07-15 13:56:48[39m[32m"[39m,
+        [34mclock_out[39m: [36mnull[39m,
+        [34mlate_minutes[39m: [35m296[39m,
+        [34mearly_leave_minutes[39m: [35m0[39m,
+        [34mstatus[39m: [32m"[39m[32mlate[39m[32m"[39m,
+        [34mcreated_at[39m: [32m"[39m[32m2026-07-15 13:56:48[39m[32m"[39m,
+        [34mupdated_at[39m: [32m"[39m[32m2026-07-15 13:56:48[39m[32m"[39m,
+      },
+    ],
+  }
