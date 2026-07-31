@@ -24,9 +24,12 @@ Route::put('/overtime-records/{id}',   [OvertimeRecordApiController::class, 'upd
 Route::delete('/overtime-records/{id}',[OvertimeRecordApiController::class, 'destroy']);
 
 Route::get('/line/balance',       [App\Http\Controllers\Api\LineController::class, 'balance']);
+Route::get('/line/my-leaves',     [App\Http\Controllers\Api\LineController::class, 'myLeaves']);
 Route::get('/line/user-id',       [App\Http\Controllers\Api\LineController::class, 'getUserId']);
+Route::get('/line/hr',            [App\Http\Controllers\Api\LineController::class, 'getHrLineId']);
 Route::get('/line/manager',       [App\Http\Controllers\Api\LineController::class, 'getManagerLineId']);
 Route::post('/line/clock-in',     [App\Http\Controllers\Api\LineController::class, 'clockIn']);
 Route::post('/line/clock-out',    [App\Http\Controllers\Api\LineController::class, 'clockOut']);
 Route::post('/line/leave-approve',[App\Http\Controllers\Api\LineController::class, 'lineApprove']);
 Route::post('/line/leave-reject', [App\Http\Controllers\Api\LineController::class, 'lineReject']);
+Route::post('/line/leave-submit', [App\Http\Controllers\Api\LineController::class, 'lineLeaveSubmit']);

@@ -186,6 +186,7 @@ class LeaveController extends Controller
                     'employee_id'   => $employee->id,
                     'employee_name' => $employee->name,
                     'employee_no'   => $employee->employee_no,
+                    'employee_line_id' => $employee->line_user_id ?? null,
                     'department'    => $employee->department,
                     'leave_type'    => $request->leave_type,
                     'start_date'    => $request->start_date,

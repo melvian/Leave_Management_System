@@ -221,6 +221,46 @@ class LineController extends Controller
         return response()->json($data);
     }
 
+    public function myLeaves(Request $request)
+    {
+        $employee = Employee::where('line_user_id', $request->line_user_id)
+            ->where('is_active', true)->first();
+
+        if (!$employee) {
+            return response()->json([
+                'success' => false,
+                'message' => '找不到員工帳號。'
+            ]);
+        }
+
+        $leaves = \App\Models\LeaveRequest::where('employee_id', $employee->id)
+            ->orderBy('created_at', 'desc')
+            ->limit(5)
+            ->get()
+            ->map(function ($leave) {
+                $type   = $leave->leave_type instanceof \App\Enums\LeaveType
+                    ? $leave->leave_type->value : $leave->leave_type;
+                $status = $leave->status instanceof \App\Enums\LeaveStatus
+                    ? $leave->status->value : $leave->status;
+
+                return [
+                    'id'         => $leave->id,
+                    'leave_type' => $type,
+                    'start_date' => $leave->start_date->format('Y-m-d'),
+                    'end_date'   => $leave->end_date->format('Y-m-d'),
+                    'days'       => $leave->days,
+                    'status'     => $status,
+                    'admin_note' => $leave->admin_note,
+                ];
+            });
+
+        return response()->json([
+            'success' => true,
+            'name'    => $employee->name,
+            'leaves'  => $leaves,
+        ]);
+    }
+
     public function getUserId(Request $request)
     {
         $employee = Employee::find($request->employee_id);
@@ -240,6 +280,20 @@ class LineController extends Controller
         return response()->json([
             'line_user_id' => $manager?->line_user_id,
             'name'         => $manager?->name,
+        ]);
+    }
+
+    public function getHrLineId()
+    {
+        // Find any active HR employee with a Line ID
+        $hr = Employee::where('role', '人資部')
+            ->where('is_active', true)
+            ->whereNotNull('line_user_id')
+            ->first();
+
+        return response()->json([
+            'line_user_id' => $hr?->line_user_id,
+            'name'         => $hr?->name,
         ]);
     }
 
@@ -266,6 +320,13 @@ class LineController extends Controller
         }
 
         $leave = \App\Models\LeaveRequest::with('employee')->find($request->leave_id);
+
+        if ($leave && $leave->employee_id === $manager->id) {
+            return response()->json([
+                'success' => false,
+                'message' => '主管不能核准自己的請假申請。'
+            ]);
+        }
 
         \Log::info('leave lookup result', [
             'found'  => $leave ? 'yes' : 'null',
@@ -337,6 +398,13 @@ class LineController extends Controller
 
         $leave = \App\Models\LeaveRequest::with('employee')->find($request->leave_id);
 
+        if ($leave && $leave->employee_id === $manager->id) {
+            return response()->json([
+                'success' => false,
+                'message' => '主管不能拒絕自己的請假申請。'
+            ]);
+        }
+
         $leaveStatus = $leave->status instanceof \App\Enums\LeaveStatus
             ? $leave->status->value
             : $leave->status;
@@ -366,6 +434,137 @@ class LineController extends Controller
                 'leave_type'    => $leaveType,
                 'admin_note'    => $request->admin_note,
                 'rejected_by'   => $manager->name,
+                'timestamp'     => now()->toIso8601String(),
+            ]);
+        } catch (\Exception $e) {}
+
+        return response()->json(['success' => true]);
+    }
+
+    public function lineLeaveSubmit(Request $request)
+    {
+        $employee = Employee::where('line_user_id', $request->line_user_id)
+            ->where('is_active', true)->first();
+
+        if (!$employee) {
+            return response()->json([
+                'success' => false,
+                'message' => '找不到員工帳號。'
+            ]);
+        }
+
+        $start = \Carbon\Carbon::parse($request->start_date);
+        $end   = \Carbon\Carbon::parse($request->end_date);
+
+        // Same-day after 12pm check
+        if ($start->isToday() && now()->hour >= 12) {
+            return response()->json([
+                'success' => false,
+                'message' => '當日請假須於中午12:00前提出申請。'
+            ]);
+        }
+
+        // Calculate days/hours
+        $hours = null;
+        $days  = 0;
+
+        if ($request->filled('start_time') && $request->filled('end_time')
+            && $request->start_date === $request->end_date) {
+            // Hourly leave
+            $hours = $request->hours;
+            $days  = round($hours / 8, 2);
+        } else {
+            // Full day — count weekdays
+            $current = $start->copy();
+            while ($current->lte($end)) {
+                if ($current->isWeekday()) $days++;
+                $current->addDay();
+            }
+        }
+
+        // Overlap check
+        $overlap = \App\Models\LeaveRequest::where('employee_id', $employee->id)
+            ->whereNotIn('status', ['草稿', '已拒絕'])
+            ->where(function ($q) use ($request) {
+                $q->whereBetween('start_date', [$request->start_date, $request->end_date])
+                ->orWhereBetween('end_date', [$request->start_date, $request->end_date])
+                ->orWhere(function ($q2) use ($request) {
+                    $q2->where('start_date', '<=', $request->start_date)
+                        ->where('end_date', '>=', $request->end_date);
+                });
+            })->first();
+
+        if ($overlap) {
+            return response()->json([
+                'success' => false,
+                'message' => '所選日期與現有假單重疊，請重新選擇。'
+            ]);
+        }
+
+        // Balance check
+        $leaveType = $request->leave_type;
+        if ($leaveType === '特休假' && $days > $employee->remainingAnnualLeave()) {
+            return response()->json([
+                'success' => false,
+                'message' => "特休假餘額不足，目前剩餘 {$employee->remainingAnnualLeave()} 天。"
+            ]);
+        }
+        if ($leaveType === '病假' && ($employee->usedSickLeave() + $days) > 30) {
+            return response()->json(['success' => false, 'message' => '病假已超過年度上限30天。']);
+        }
+        if ($leaveType === '事假' && ($employee->usedPersonalLeave() + $days) > 14) {
+            return response()->json(['success' => false, 'message' => '事假已超過年度上限14天。']);
+        }
+        if ($leaveType === '生理假' && $employee->usedMenstrualLeaveThisMonth() >= 1) {
+            return response()->json(['success' => false, 'message' => '本月生理假已請畢。']);
+        }
+        if ($leaveType === '補休' && ($days * 8) > $employee->compensatory_hours_remaining) {
+            return response()->json([
+                'success' => false,
+                'message' => "補休時數不足，目前剩餘 {$employee->compensatory_hours_remaining} 小時。"
+            ]);
+        }
+
+        // Determine approver based on role
+        $roleValue = $employee->role instanceof \App\Enums\Role
+            ? $employee->role->value : $employee->role;
+
+        $currentApprover = match($roleValue) {
+            '部門主管' => 'hr',
+            '人資部'   => 'hr',
+            default   => 'manager',
+        };
+
+        $leaveRequest = \App\Models\LeaveRequest::create([
+            'employee_id'      => $employee->id,
+            'leave_type'       => $request->leave_type,
+            'leave_reason'     => $request->leave_reason,
+            'start_date'       => $request->start_date,
+            'end_date'         => $request->end_date,
+            'days'             => $days,
+            'hours'            => $hours,
+            'start_time'       => $request->start_time ?? null,
+            'end_time'         => $request->end_time ?? null,
+            'status'           => '簽核中',
+            'current_approver' => $currentApprover,
+            'admin_note'       => null,
+        ]);
+
+        // Publish MQTT so manager gets Line notification
+        try {
+            $mqtt = new \App\Services\MqttService();
+            $mqtt->publish('leave/submitted', [
+                'leave_id'      => $leaveRequest->id,
+                'employee_id'   => $employee->id,
+                'employee_name' => $employee->name,
+                'employee_no'   => $employee->employee_no,
+                'employee_line_id' => $employee->line_user_id ?? null,
+                'department'    => $employee->department,
+                'leave_type'    => $request->leave_type,
+                'start_date'    => $request->start_date,
+                'end_date'      => $request->end_date,
+                'days'          => $days,
+                'hours'         => $hours,
                 'timestamp'     => now()->toIso8601String(),
             ]);
         } catch (\Exception $e) {}
