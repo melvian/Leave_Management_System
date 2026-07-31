@@ -11,3 +11,6 @@
 .phpunit.result.cache
 Thumbs.db
 .DS_Store
+/bootstrap/cache/
+/storage/framework/
+/database/
