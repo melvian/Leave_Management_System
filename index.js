@@ -33,6 +33,13 @@ const LEAVE_STEPS = {
 
 const LEAVE_TYPES = ['特休假', '病假', '事假', '公假', '補休', '生理假'];
 
+const OVERTIME_STEPS = {
+    SELECT_START: 'ot_select_start',
+    SELECT_END:   'ot_select_end',
+    REASON:       'ot_reason',
+    CONFIRM:      'ot_confirm'
+};
+
 // Line webhook must use raw body for signature verification
 app.post('/webhook',
     line.middleware(lineConfig),
@@ -67,6 +74,11 @@ async function handleEvent(event) {
 
     // If user is in a leave application flow, handle their input
     if (userState[userId] && text !== '取消') {
+        const step = userState[userId].step;
+
+        if (Object.values(OVERTIME_STEPS).includes(step)) {
+            return handleOvertimeFlow(event, userId, text);
+        }
         return handleLeaveFlow(event, userId, text);
     }
 
@@ -97,6 +109,17 @@ async function handleEvent(event) {
 
     if (text === '取消' || text === 'cancel') {
         return handleCancel(event, userId);
+    }
+
+    if (text === '我的id' || text === 'my id' || text === '我的LineID') {
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{ type: 'text', text: `您的 Line User ID 是：\n\n${userId}\n\n請將此 ID 提供給人資部，以完成 Line 帳號綁定。` }]
+        });
+    }
+
+    if (text === '加班' || text === '申請加班') {
+        return handleOvertimeStart(event, userId);
     }
 
     // Default reply
@@ -157,6 +180,59 @@ async function handleClockOut(event, userId) {
             msg = d.early_leave_minutes > 0
                 ? `✅ 下班打卡成功\n⏰ 時間：${d.clock_out}\n📊 實際工時：${d.worked_hours} 小時\n⚠ 早退 ${d.early_leave_minutes} 分鐘`
                 : `✅ 下班打卡成功\n⏰ 時間：${d.clock_out}\n📊 實際工時：${d.worked_hours} 小時`;
+
+            // Auto overtime
+            if (d.overtime_minutes && d.overtime_minutes > 0) {
+
+                const otHours = Math.round((d.overtime_minutes / 60) * 10) / 10;
+                const startDisplay = d.shift_end; 
+                const endDisplay = d.clock_out;
+                
+                userState[userId] = {
+                    step: OVERTIME_STEPS.REASON,
+                    auto_overtime: true,
+                    start_time: `${d.date}T${startDisplay}`,
+                    end_time: `${d.date}T${endDisplay}`,
+                    start_display: startDisplay,
+                    end_display: endDisplay,
+                    date_display: d.date,
+                    hours: otHours,
+                };
+
+                return client.replyMessage({
+                    replyToken: event.replyToken,
+                    messages: [
+                        { type: 'text', text: msg },
+                        {
+                            type: 'text',
+                            text: `⏰ 系統偵測您今天超時工作 ${otHours} 小時\n （${startDisplay} – ${endDisplay}）\n\n是否記錄加班？`,
+                            quickReply: {  
+                                items: [ 
+                                    {
+                                        type: 'action',
+                                        action: {
+                                            type: 'postback',
+                                            label: '✅ 記錄加班',
+                                            data: 'action=confirm_overtime',
+                                            displayText: '記錄加班'
+                                        }
+                                    },
+                                    {
+                                        type: 'action',
+                                        action: {
+                                            type: 'postback',
+                                            label: '❌ 不記錄',
+                                            data: 'action=skip_auto_overtime',
+                                            displayText: '不記錄'
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                });
+            }
+
         } else {
             msg = `❌ ${d.message}`;
         }
@@ -229,10 +305,12 @@ async function handleHelp(event) {
                 '─────────────────\n' +
                 '上班　　 → 上班打卡\n' +
                 '下班　　 → 下班打卡\n' +
+                '加班　　 → 記錄加班\n' +
                 '我的假期 → 查詢假期餘額\n' +
                 '我的請假 → 查看請假記錄\n' +
                 '請假　　 → 申請請假\n' +
                 '取消　　 → 取消目前操作\n' +
+                '我的LineID → 取得您的 Line User ID\n' +
                 '說明　　 → 顯示此說明'
         }]
     });
@@ -859,7 +937,6 @@ async function handleLeaveReason(event, userId, text) {
     });
 }
 
-
 async function handleCancel(event, userId) {
     if (userState[userId]) {
         delete userState[userId];
@@ -871,6 +948,339 @@ async function handleCancel(event, userId) {
     return client.replyMessage({
         replyToken: event.replyToken,
         messages: [{ type: 'text', text: '目前沒有進行中的操作。' }]
+    });
+}
+
+async function handleOvertimeStart(event, userId) {
+    // Check if employee exists
+    const empRes = await axios.get(
+        `${process.env.LARAVEL_API}/line/balance`,
+        { params: { line_user_id: userId } }
+    ).catch(() => null);
+
+    if (!empRes?.data?.success) {
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{ type: 'text',
+                text: '❌ 找不到您的員工帳號，請聯繫人資部綁定 Line 帳號。' }]
+        });
+    }
+
+    // Init state
+    userState[userId] = { step: OVERTIME_STEPS.SELECT_START };
+
+    const today = new Date().toISOString().split('T')[0];
+    const todayMin = `${today}T18:00`;
+
+    return client.replyMessage({
+        replyToken: event.replyToken,
+        messages: [{
+            type: 'text',
+            text: '📋 記錄加班\n請選擇加班開始時間：\n\n（輸入「取消」可隨時取消）',
+            quickReply: {
+                items: [{
+                    type: 'action',
+                    action: {
+                        type: 'datetimepicker',
+                        label: '📋 選擇開始時間',
+                        data: 'action=pick_ot_start',
+                        mode: 'datetime',
+                        initial: todayMin,
+                        min: `${today}T00:00`,
+                        max: `${today}T23:30`
+                    }
+                }]
+            }
+        }]
+    });
+}
+
+async function handleOvertimeFlow(event, userId, text) {
+    const state = userState[userId];
+
+    if (!state) return null;
+
+    if (state.step === OVERTIME_STEPS.REASON) {
+        return handleOvertimeReason(event, userId, text);
+    }
+
+    return null;
+}
+
+async function handleOvertimeReason(event, userId, text) {
+    if (text.trim().length < 2) {
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{ type: 'text',
+                text: '❌ 加班原因至少需要2個字，請重新輸入。' }]
+        });
+    }
+
+    userState[userId].reason = text.trim();
+    userState[userId].step   = OVERTIME_STEPS.CONFIRM;
+
+    return sendOvertimeConfirmation(event, userId);
+}
+
+async function sendOvertimeConfirmation(event, userId) {
+    const s = userState[userId];
+
+    //Calculate total hours
+    const [sh,sm] = s.start_time.split('T')[1].split(':').map(Number);
+    const [eh,em] = s.end_time.split('T')[1].split(':').map(Number);
+    const totalMins = (eh * 60 + em) - (sh * 60 + sm);
+    const hours = Math.round((totalMins / 60) * 10) / 10;
+
+    const startDisplay = s.start_time.split('T')[1].substring(0,5);
+    const endDisplay = s.end_time.split('T')[1].substring(0,5);
+    const dateDisplay = s.start_time.split('T')[0];
+
+    s.hours = hours;
+    s.start_display = startDisplay;
+    s.end_display = endDisplay;
+    s.date_display = dateDisplay;
+
+    const confirmFlex = {
+        type: 'flex',
+        altText: '請確認您的加班記錄',
+        contents: {
+            type: 'bubble',
+            size: 'kilo',
+            header: {
+                type: 'box',
+                layout: 'vertical',
+                contents: [{
+                    type: 'text',
+                    text: '📋 加班記錄確認',
+                    color: '#ffffff',
+                    size: 'md',
+                    weight: 'bold'
+                }],
+                backgroundColor: '#1F3864',
+                paddingAll: '16px'
+            },
+            body: {
+                type: 'box',
+                layout: 'vertical',
+                spacing: 'sm',
+                paddingAll: '16px',
+                contents: [
+                    makeRow('日期', dateDisplay),
+                    makeRow('時段', `${startDisplay} – ${endDisplay}`),
+                    makeRow('時數', `${hours} 小時`),
+                    makeRow('原因', s.reason),
+                    { type: 'separator', margin: 'md' },
+                    {
+                        type: 'box',
+                        layout: 'horizontal',
+                        margin: 'md',
+                        spacing: 'sm',
+                        contents: [
+                            {
+                                type: 'button',
+                                action: {
+                                    type: 'postback',
+                                    label: '✅ 送出加班記錄',
+                                    data: `action=submit_overtime`,
+                                    displayText: '送出加班記錄'
+                                },
+                                style: 'primary',
+                                color: '#198754',
+                                height: 'sm'
+                            },
+                            {
+                                type: 'button',
+                                action: {
+                                    type: 'postback',
+                                    label: '❌ 取消',
+                                    data: `action=cancel_overtime`,
+                                    displayText: '取消加班記錄'
+                                },
+                                style: 'secondary',
+                                height: 'sm'
+                            }
+                        ]
+                    }
+                ]
+            },
+            footer: {
+                type: 'box',
+                layout: 'vertical',
+                contents: [{
+                    type: 'text',
+                    text: '送出後等待主管確認，確認後補休時數自動加入。',
+                    size: 'xs',
+                    color: '#6c757d',
+                    align: 'center',
+                    wrap: true
+                }],
+                paddingAll: '12px'
+            }
+        }
+    };
+
+    return client.replyMessage({
+        replyToken: event.replyToken,
+        messages: [confirmFlex]
+    });
+}
+
+async function handleOvertimeSubmit(event, userId) {
+    const state = userState[userId];
+
+    if (!state || state.step !== OVERTIME_STEPS.CONFIRM) {
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{ type: 'text', text: '❌ 沒有可送出的加班記錄，請重新輸入「加班」。' }]
+        });
+    }
+
+    try {
+        const res = await axios.post(
+            `${process.env.LARAVEL_API}/line/submit-overtime`,
+            {
+                line_user_id: userId,
+                start_time: state.start_time,
+                end_time: state.end_time,
+                reason: state.reason
+            }
+        );
+
+        delete userState[userId];
+
+        if(res.data.success) {
+            return client.replyMessage({
+                replyToken: event.replyToken,
+                messages: [{ type: 'text', text: '✅ 加班記錄已送出，等待主管確認。' }]
+            });
+        }else {
+            return client.replyMessage({
+                replyToken: event.replyToken,
+                messages: [{ type: 'text', text: `❌記錄失敗： ${res.data.message}` }]
+            });
+        }
+
+    } catch (err) {
+        console.error('Overtime submit error:', err.response?.data || err.message);
+        delete userState[userId];
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{ type: 'text', text: '❌記錄失敗，請稍後再試或之系統網頁申請。' }]
+        });
+    }
+}
+
+async function handleOtStartPicked(event, userId, datetime) {
+    if (!userState[userId]) {
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{ type: 'text', text: '操作已逾時，請重新輸入「加班」。' }]
+        });
+    }
+
+    userState[userId].start_time = datetime;
+    userState[userId].step       = OVERTIME_STEPS.SELECT_END;
+
+    //End time picker with min = start_time 
+    const startDisplay = datetime.split('T')[1].substring(0,5);
+    const date = datetime.split('T')[0];
+    
+    return client.replyMessage({
+        replyToken: event.replyToken,
+        messages: [{
+            type: 'text',
+            text: `✅ 開始時間：${startDisplay}\n\n請選擇加班結束時間：`,
+            quickReply: {
+                items: [{
+                    type: 'action',
+                    action: {
+                        type: 'datetimepicker',
+                        label: '📋 選擇結束時間',
+                        data: 'action=pick_ot_end',
+                        mode: 'datetime',
+                        initial: datetime,
+                        min: datetime,
+                        max: `${date}T23:30`
+                    }
+                }]
+            }
+        }]
+    });
+}
+
+async function handleOtEndPicked(event, userId, datetime) {
+    if (!userState[userId]) {
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{ type: 'text', text: '操作已逾時，請重新輸入「加班」。' }]
+        });
+    }
+
+    const startTime = userState[userId].start_time;
+    const endTime   = datetime;
+
+    if (new Date(endTime) <= new Date(startTime)) {
+        const date = startTime.split('T')[0];
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{
+                type: 'text',
+                text: '❌ 結束時間必須晚於開始時間，請重新選擇：',
+                quickReply: {
+                    items: [{
+                        type: 'action',
+                        action: {
+                            type: 'datetimepicker',
+                            label: '📋 重新選擇結束時間',
+                            data: 'action=pick_ot_end',
+                            mode: 'datetime',
+                            initial: startTime,
+                            min: startTime,
+                            max: `${date}T23:30`
+                        }
+                    }]
+                }
+            }]
+        });
+    }
+
+    // Calculate total hours
+    const [sh, sm] = startTime.split('T')[1].split(':').map(Number);
+    const [eh, em] = endTime.split('T')[1].split(':').map(Number);
+    const totalMins  = (eh * 60 + em) - (sh * 60 + sm);
+    const hours = Math.round((totalMins / 60) * 10) / 10;
+
+    const endDisplay = endTime.split('T')[1].substring(0,5);
+
+    userState[userId].end_time = endTime;
+    userState[userId].step     = OVERTIME_STEPS.REASON;
+
+    return client.replyMessage({
+        replyToken: event.replyToken,
+        messages: [{
+            type: 'text',
+            text: `✅ 結束時間：${endDisplay}\n⏱ 加班時數：${hours} 小時\n\n請輸入加班原因：`
+        }]
+    });
+}
+
+//Auto overtime after clock out
+async function handleAutoOvertimeConfirm(event, userId) {
+    const state = userState[userId];
+
+    if (!state || !state.auto_overtime) {
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{ type: 'text', text: '請輸入加班原因：' }]
+        });
+    }
+
+    // Go to reason step
+    userState[userId].step = OVERTIME_STEPS.REASON;
+
+    return client.replyMessage({
+        replyToken: event.replyToken,
+        messages: [{ type: 'text', text: `加班時段：${state.start_display} - ${state.end_display} (${state.hours} 小時) \n\n請輸入加班原因：` }]
     });
 }
 
@@ -1083,6 +1493,40 @@ async function handlePostback(event) {
         return client.replyMessage({
             replyToken: event.replyToken,
             messages: [{ type: 'text', text: '已取消請假申請。' }]
+        });
+    }
+
+    if (action === 'pick_ot_start') {
+        const datetime = event.postback.params.datetime;
+        return handleOtStartPicked(event, userId, datetime);
+    }
+
+    if (action === 'pick_ot_end') {
+        const datetime = event.postback.params.datetime;
+        return handleOtEndPicked(event, userId, datetime);
+    }
+    
+    if (action === 'submit_overtime') {
+        return handleOvertimeSubmit(event, userId);
+    }
+
+    if (action === 'cancel_overtime') {
+        delete userState[userId];
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{ type: 'text', text: '已取消加班記錄。' }]
+        });
+    }
+
+    if (action === 'confirm_auto_overtime') {
+        return handleAutoOvertimeConfirm(event, userId);
+    }
+
+    if (action === 'skip_auto_overtime') {
+        delete userState[userId];
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{ type: 'text', text: '已跳過自動加班記錄。' }]
         });
     }
 
