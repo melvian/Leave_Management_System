@@ -20,6 +20,7 @@ class Employee extends Authenticatable
         'password',
         'is_active',
         'compensatory_hours_remaining',
+        'line_user_id',
     ];
     protected $hidden = [
         'password',

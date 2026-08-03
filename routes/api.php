@@ -33,3 +33,4 @@ Route::post('/line/clock-out',    [App\Http\Controllers\Api\LineController::clas
 Route::post('/line/leave-approve',[App\Http\Controllers\Api\LineController::class, 'lineApprove']);
 Route::post('/line/leave-reject', [App\Http\Controllers\Api\LineController::class, 'lineReject']);
 Route::post('/line/leave-submit', [App\Http\Controllers\Api\LineController::class, 'lineLeaveSubmit']);
+Route::post('/line/overtime-submit', [App\Http\Controllers\Api\LineController::class, 'lineOvertimeSubmit']);

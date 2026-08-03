@@ -107,6 +107,7 @@ class EmployeeController extends Controller
             'name'       => 'required|string|max:50',
             'department' => 'required|string',
             'role'       => 'required|string',
+            'line_user_id' => 'nullable|string|max:100',
         ]);
 
         // ── Role validation checks ─────────────────────────────
@@ -145,6 +146,7 @@ class EmployeeController extends Controller
             'name'       => $request->name,
             'department' => $request->department,
             'role'       => $request->role,
+            'line_user_id' => $request->line_user_id ?: null,
         ]);
 
         return redirect()->route('employee.show', $id)

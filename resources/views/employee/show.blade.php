@@ -40,11 +40,32 @@
                         '年資'     => $diff->y.'年'.$diff->m.'個月',
                         '帳號狀態' => $emp->is_active ? '啟用中' : '已停用',
                     ] as $label => $value)
-                    <tr>
-                        <td class="text-muted fw-semibold" style="width:90px;">{{ $label }}</td>
-                        <td class="fw-semibold">{{ $value }}</td>
-                    </tr>
+                        <tr>
+                            <td class="text-muted fw-semibold" style="width:90px;">{{ $label }}</td>
+                            <td class="fw-semibold">{{ $value }}</td>
+                        </tr>
                     @endforeach
+
+                    {{-- Line binding status (separate row outside loop) --}}
+                    <tr>
+                        <td class="text-muted fw-semibold" style="width:90px;">Line 綁定</td>
+                        <td>
+                            @if($emp->line_user_id)
+                                <span class="badge" style="background:#06C755; font-size:11px;">
+                                    <i class="bi bi-check-circle me-1"></i>已綁定
+                                </span>
+                                <span class="text-muted ms-2"
+                                    style="font-family:monospace; font-size:11px;">
+                                    {{ Str::limit($emp->line_user_id, 12, '...') }}
+                                </span>
+                            @else
+                                <span class="badge bg-secondary" style="font-size:11px;">
+                                    <i class="bi bi-dash-circle me-1"></i>未綁定
+                                </span>
+                            @endif
+                        </td>
+                    </tr>
+                    <tr>
                 </table>
                 @if($canManage)
                 <div class="d-flex gap-2">

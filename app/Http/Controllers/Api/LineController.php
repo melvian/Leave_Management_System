@@ -156,15 +156,18 @@ class LineController extends Controller
         $earlyLeaveMinutes = 0;
         $status            = $record->status;
 
-        if ($now->lt($shiftEnd)) {
-            $earlyLeaveMinutes = (int) $now->diffInMinutes($shiftEnd);
-            if ($status === 'normal') $status = 'early_leave';
+        $shiftEndTime = Carbon::parse($today . ' ' . $shift->shift_end);
+        $overtimeMinutes = 0;
+
+        if ($now->gt($shiftEndTime)) {
+            $overtimeMinutes = (int) $shiftEndTime->diffInMinutes($now);
         }
 
         $record->update([
             'clock_out'           => $now,
             'worked_hours'        => $workedHours,
             'early_leave_minutes' => $earlyLeaveMinutes,
+            'overtime_minutes'    => $overtimeMinutes,
             'status'              => $status,
         ]);
 
@@ -178,6 +181,7 @@ class LineController extends Controller
                 'clock_out'           => $now->toIso8601String(),
                 'worked_hours'        => $workedHours,
                 'early_leave_minutes' => $earlyLeaveMinutes,
+                'overtime_minutes'    => $overtimeMinutes,
                 'status'              => $status,
                 'source'              => 'line',
                 'timestamp'           => $now->toIso8601String(),
@@ -189,6 +193,9 @@ class LineController extends Controller
             'clock_out'           => $now->format('H:i'),
             'worked_hours'        => $workedHours,
             'early_leave_minutes' => $earlyLeaveMinutes,
+            'overtime_minutes'    => $overtimeMinutes,
+            'shift_end'           => $shift->shift_end,
+            'date'                => $today,
         ]);
     }
 
@@ -571,4 +578,55 @@ class LineController extends Controller
 
         return response()->json(['success' => true]);
     }
+
+    public function lineOvertimeSubmit(Request $request)
+    {
+        $employee = Employee::where('line_user_id', $request->line_user_id)
+            ->where('is_active', true)->first();
+
+        if (!$employee) {
+            return response()->json([
+                'success' => false,
+                'message' => '找不到員工帳號。'
+            ]);
+        }
+
+        if ($request->hours <= 0) {
+            return response()->json([
+                'success' => false,
+                'message' => '加班時數必須大於0。'
+            ]);
+        }
+
+        $record = \App\Models\OvertimeRecord::create([
+            'employee_id'  => $employee->id,
+            'date'         => $request->date,
+            'start_time'   => $request->start_time,
+            'end_time'     => $request->end_time,
+            'hours'        => $request->hours,
+            'overtime_reason'=> $request->overtime_reason,
+            'status'       => '簽核中',
+            'admin_note'   => null,
+        ]);
+
+        // Publish MQTT 
+        try {
+            $mqtt = new \App\Services\MqttService();
+            $mqtt->publish('overtime/submitted', [
+                'overtime_id'   => $record->id,
+                'employee_id'   => $employee->id,
+                'employee_name' => $employee->name,
+                'employee_no'   => $employee->employee_no,
+                'department'    => $employee->department,
+                'date'          => $request->date,
+                'start_time'    => $request->start_time,
+                'end_time'      => $request->end_time,
+                'hours'         => $request->hours,
+                'overtime_reason' => $request->overtime_reason,
+                'timestamp'     => now()->toIso8601String(),
+            ]);
+        } catch (\Exception $e) {}
+
+        return response()->json(['success' => true]);
+    }   
 }

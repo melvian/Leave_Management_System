@@ -67,6 +67,55 @@
                 修改角色將影響該員工的系統存取權限，請謹慎操作。
             </div>
 
+            {{-- Line Account Binding --}}
+            <div class="col-12">
+                <hr class="my-2">
+                <h6 class="fw-bold mb-3" style="color:#1F3864;">
+                    <i class="bi bi-chat-dots me-2"></i>Line 帳號綁定
+                </h6>
+            </div>
+
+            <div class="col-md-8">
+                <label class="form-label">Line User ID</label>
+                <div class="input-group">
+                    <span class="input-group-text" style="background:#06C755;">
+                        <i class="bi bi-chat-fill text-white"></i>
+                    </span>
+                    <input type="text" name="line_user_id" class="form-control"
+                        value="{{ old('line_user_id', $emp->line_user_id) }}"
+                        placeholder="U 開頭的 Line 用戶 ID，例如：Uxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx">
+                </div>
+
+                @if($emp->line_user_id)
+                <div class="mt-2 d-flex align-items-center gap-2">
+                    <span class="badge" style="background:#06C755;">
+                        <i class="bi bi-check-circle me-1"></i>已綁定
+                    </span>
+                    <span class="text-muted" style="font-family:monospace; font-size:12px;">
+                        {{ $emp->line_user_id }}
+                    </span>
+                    <button type="button" class="btn btn-sm btn-outline-danger"
+                        onclick="clearLineId()">
+                        <i class="bi bi-x-circle me-1"></i>解除綁定
+                    </button>
+                </div>
+                @else
+                <div class="mt-2">
+                    <span class="badge bg-secondary">
+                        <i class="bi bi-dash-circle me-1"></i>未綁定
+                    </span>
+                </div>
+                @endif
+
+                <div class="form-text">
+                    <i class="bi bi-info-circle me-1"></i>
+                    員工 Line User ID 可由員工傳訊給 Line Bot 後，從伺服器日誌取得。格式為 U 開頭共34個字元。
+                </div>
+            </div>
+
+            {{-- Hidden field for clearing --}}
+            <input type="hidden" name="_clear_line_id" id="clear_line_id_flag" value="0">
+
             <div class="d-flex gap-2">
                 <button type="submit" class="btn btn-navy">
                     <i class="bi bi-check-lg me-1"></i> 儲存變更
@@ -117,8 +166,17 @@
 
 @section('scripts')
 <script>
-const currentDept = "{{ $emp->department }}";
 
+function clearLineId() {
+    if (confirm('確定解除此員工的 Line 帳號綁定？')) {
+        document.querySelector('input[name="line_user_id"]').value = '';
+        document.getElementById('clear_line_id_flag').value = '1';
+        document.querySelector('form').submit();
+    }
+}
+
+// Role restriction check
+const currentDept = "{{ $emp->department }}";
 function checkRoleRestriction() {
     const role = document.getElementById('role_select').value;
     const warning = document.getElementById('role_warning');
@@ -133,8 +191,6 @@ function checkRoleRestriction() {
         warning.style.display = 'none';
     }
 }
-
-// Run on page load to catch existing invalid assignments
 checkRoleRestriction();
 </script>
 @endsection
