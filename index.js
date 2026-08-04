@@ -122,6 +122,14 @@ async function handleEvent(event) {
         return handleOvertimeStart(event, userId);
     }
 
+    if (text === '我的加班' || text === '加班記錄') {
+        return handleMyOvertime(event, userId);
+    }
+
+    if (text === '待審' || text === '待審清單' || text === '待審') {
+        return handlePendingQueue(event, userId);
+    }
+
     // Default reply
     return client.replyMessage({
         replyToken: event.replyToken,
@@ -302,14 +310,16 @@ async function handleHelp(event) {
             type: 'text',
             text:
                 '差勤管理系統 指令說明\n' +
-                '─────────────────\n' +
+                '──────────────\n' +
                 '上班　　 → 上班打卡\n' +
                 '下班　　 → 下班打卡\n' +
                 '加班　　 → 記錄加班\n' +
-                '我的假期 → 查詢假期餘額\n' +
-                '我的請假 → 查看請假記錄\n' +
                 '請假　　 → 申請請假\n' +
                 '取消　　 → 取消目前操作\n' +
+                '我的假期 → 查詢假期餘額\n' +
+                '我的請假 → 查看請假記錄\n' + 
+                '我的加班 → 查看加班記錄\n' +
+                '待審清單 → 查看待審核的申請\n' +
                 '我的LineID → 取得您的 Line User ID\n' +
                 '說明　　 → 顯示此說明'
         }]
@@ -970,7 +980,9 @@ async function handleOvertimeStart(event, userId) {
     userState[userId] = { step: OVERTIME_STEPS.SELECT_START };
 
     const today = new Date().toISOString().split('T')[0];
-    const todayMin = `${today}T18:00`;
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const minDate = thirtyDaysAgo.toISOString().split('T')[0];
 
     return client.replyMessage({
         replyToken: event.replyToken,
@@ -985,8 +997,8 @@ async function handleOvertimeStart(event, userId) {
                         label: '📋 選擇開始時間',
                         data: 'action=pick_ot_start',
                         mode: 'datetime',
-                        initial: todayMin,
-                        min: `${today}T00:00`,
+                        initial: `${today}T18:00`,
+                        min: `${minDate}T00:00`,
                         max: `${today}T23:30`
                     }
                 }]
@@ -1137,12 +1149,14 @@ async function handleOvertimeSubmit(event, userId) {
 
     try {
         const res = await axios.post(
-            `${process.env.LARAVEL_API}/line/submit-overtime`,
+            `${process.env.LARAVEL_API}/line/overtime-submit`,
             {
                 line_user_id: userId,
+                date: state.date_display,
                 start_time: state.start_time,
                 end_time: state.end_time,
-                reason: state.reason
+                hours: state.hours,
+                overtime_reason: state.reason,
             }
         );
 
@@ -1189,7 +1203,7 @@ async function handleOtStartPicked(event, userId, datetime) {
         replyToken: event.replyToken,
         messages: [{
             type: 'text',
-            text: `✅ 開始時間：${startDisplay}\n\n請選擇加班結束時間：`,
+            text: `✅ 開始時間：${date} ${startDisplay}\n\n請選擇加班結束時間：`,
             quickReply: {
                 items: [{
                     type: 'action',
@@ -1528,6 +1542,19 @@ async function handlePostback(event) {
             replyToken: event.replyToken,
             messages: [{ type: 'text', text: '已跳過自動加班記錄。' }]
         });
+    }
+
+    if (action === 'confirm_overtime') {
+        const overtimeId = params.get('overtime_id');
+        const empName = decodeURIComponent(params.get('employee_name') || '');
+        const hours = params.get('hours');
+        return handleLineOvertimeApprove(event, overtimeId, empName, hours);
+    }
+
+    if (action === 'reject_overtime') {
+        const overtimeId = params.get('overtime_id');
+        const empName = decodeURIComponent(params.get('employee_name') || '');
+        return handleLineOvertimeRejectPrompt(event, overtimeId, empName);
     }
 
     return null;
@@ -2053,6 +2080,335 @@ async function pushLeaveSubmittedToManager(data) {
         console.log(`FLex Message sent to manager of ${data.department}`);
     } catch (err) {
         console.error('Push leave submitted error:', err.message);
+    }
+}
+
+// ── Pending queue for managers and HR ─────────────
+async function handlePendingQueue(event, userId) {
+    try {
+        // Fetch pending leaves and overtime in parallel
+        const [leaveRes, otRes] = await Promise.all([
+            axios.get(`${process.env.LARAVEL_API}/line/pending-leaves`,
+                { params: { line_user_id: userId } }).catch(() => null),
+            axios.get(`${process.env.LARAVEL_API}/line/pending-overtime`,
+                { params: { line_user_id: userId } }).catch(() => null),
+        ]);
+
+        // Check access
+        if (!leaveRes?.data?.success && !otRes?.data?.success) {
+            return client.replyMessage({
+                replyToken: event.replyToken,
+                messages: [{ type: 'text',
+                    text: '❌ 您沒有審核權限。' }]
+            });
+        }
+
+        const leaves  = leaveRes?.data?.leaves  || [];
+        const records = otRes?.data?.records    || [];
+        const role    = leaveRes?.data?.role    || otRes?.data?.role;
+        const dept    = leaveRes?.data?.department || '';
+
+        // Nothing pending
+        if (leaves.length === 0 && records.length === 0) {
+            const roleLabel = role === '人資部' || role === '系統管理者'
+                ? '（人資）' : `（${dept}）`;
+            return client.replyMessage({
+                replyToken: event.replyToken,
+                messages: [{ type: 'text',
+                    text: `✅ 目前沒有待審核的申請${roleLabel}。` }]
+            });
+        }
+
+        const messages = [];
+
+        // ── Leave pending cards ───────────────────
+        if (leaves.length > 0) {
+            const leaveBubbles = leaves.map(leave => {
+                const isHR = role === '人資部' || role === '系統管理者';
+                const dateStr = leave.start_date === leave.end_date
+                    ? leave.start_date
+                    : `${leave.start_date} ~ ${leave.end_date}`;
+
+                const actionButtons = isHR
+                    // HR sees approve/reject
+                    ? [
+                        {
+                            type: 'button',
+                            action: {
+                                type: 'postback',
+                                label: '✅ 核准',
+                                data: `action=approve&leave_id=${leave.id}&employee_name=${encodeURIComponent(leave.employee_name)}&leave_type=${encodeURIComponent(leave.leave_type)}`,
+                                displayText: `核准 ${leave.employee_name} 的${leave.leave_type}`
+                            },
+                            style: 'primary',
+                            color: '#198754',
+                            height: 'sm'
+                        },
+                        {
+                            type: 'button',
+                            action: {
+                                type: 'postback',
+                                label: '❌ 拒絕',
+                                data: `action=reject_prompt&leave_id=${leave.id}&employee_name=${encodeURIComponent(leave.employee_name)}&leave_type=${encodeURIComponent(leave.leave_type)}`,
+                                displayText: `拒絕 ${leave.employee_name} 的${leave.leave_type}`
+                            },
+                            style: 'secondary',
+                            height: 'sm'
+                        }
+                    ]
+                    // Manager sees approve/reject
+                    : [
+                        {
+                            type: 'button',
+                            action: {
+                                type: 'postback',
+                                label: '✅ 核准',
+                                data: `action=approve&leave_id=${leave.id}&employee_name=${encodeURIComponent(leave.employee_name)}&leave_type=${encodeURIComponent(leave.leave_type)}`,
+                                displayText: `核准 ${leave.employee_name} 的${leave.leave_type}`
+                            },
+                            style: 'primary',
+                            color: '#198754',
+                            height: 'sm'
+                        },
+                        {
+                            type: 'button',
+                            action: {
+                                type: 'postback',
+                                label: '❌ 拒絕',
+                                data: `action=reject_prompt&leave_id=${leave.id}&employee_name=${encodeURIComponent(leave.employee_name)}&leave_type=${encodeURIComponent(leave.leave_type)}`,
+                                displayText: `拒絕 ${leave.employee_name} 的${leave.leave_type}`
+                            },
+                            style: 'secondary',
+                            height: 'sm'
+                        }
+                    ];
+
+                return {
+                    type: 'bubble',
+                    size: 'kilo',
+                    header: {
+                        type: 'box',
+                        layout: 'horizontal',
+                        contents: [
+                            {
+                                type: 'text',
+                                text: '📋 待審請假',
+                                color: '#ffffff',
+                                size: 'sm',
+                                weight: 'bold',
+                                flex: 3
+                            },
+                            {
+                                type: 'text',
+                                text: leave.leave_type,
+                                color: '#ffd700',
+                                size: 'sm',
+                                align: 'end',
+                                flex: 2
+                            }
+                        ],
+                        backgroundColor: '#1F3864',
+                        paddingAll: '12px'
+                    },
+                    body: {
+                        type: 'box',
+                        layout: 'vertical',
+                        spacing: 'sm',
+                        paddingAll: '12px',
+                        contents: [
+                            makeRow('申請人',
+                                `${leave.employee_name}（${leave.employee_no}）`),
+                            makeRow('部門', leave.department),
+                            makeRow('日期', dateStr),
+                            makeRow('天數', `${leave.days} 天`),
+                            makeRow('事由', leave.leave_reason || '—'),
+                            { type: 'separator', margin: 'md' },
+                            {
+                                type: 'box',
+                                layout: 'horizontal',
+                                margin: 'md',
+                                spacing: 'sm',
+                                contents: actionButtons
+                            }
+                        ]
+                    }
+                };
+            });
+
+            // Show as carousel if multiple
+            messages.push({
+                type: 'text',
+                text: `📋 待審請假（${leaves.length} 筆）：`
+            });
+            messages.push({
+                type: 'flex',
+                altText: `待審請假 ${leaves.length} 筆`,
+                contents: leaves.length === 1
+                    ? leaveBubbles[0]
+                    : { type: 'carousel', contents: leaveBubbles }
+            });
+        }
+
+        // ── Overtime pending cards ─────────────────
+        if (records.length > 0) {
+            const otBubbles = records.map(r => ({
+                type: 'bubble',
+                size: 'kilo',
+                header: {
+                    type: 'box',
+                    layout: 'horizontal',
+                    contents: [
+                        {
+                            type: 'text',
+                            text: '⏰ 待確認加班',
+                            color: '#ffffff',
+                            size: 'sm',
+                            weight: 'bold',
+                            flex: 3
+                        },
+                        {
+                            type: 'text',
+                            text: `${r.hours}h`,
+                            color: '#ffd700',
+                            size: 'sm',
+                            align: 'end',
+                            flex: 2
+                        }
+                    ],
+                    backgroundColor: '#0E7C86',
+                    paddingAll: '12px'
+                },
+                body: {
+                    type: 'box',
+                    layout: 'vertical',
+                    spacing: 'sm',
+                    paddingAll: '12px',
+                    contents: [
+                        makeRow('員工',
+                            `${r.employee_name}（${r.employee_no}）`),
+                        makeRow('部門', r.department),
+                        makeRow('日期', r.date),
+                        makeRow('時段', `${r.start_time} – ${r.end_time}`),
+                        makeRow('時數', `${r.hours} 小時`),
+                        makeRow('事由', r.overtime_reason || '—'),
+                        { type: 'separator', margin: 'md' },
+                        {
+                            type: 'box',
+                            layout: 'horizontal',
+                            margin: 'md',
+                            spacing: 'sm',
+                            contents: [
+                                {
+                                    type: 'button',
+                                    action: {
+                                        type: 'postback',
+                                        label: '✅ 確認',
+                                        data: `action=confirm_overtime&overtime_id=${r.id}&employee_name=${encodeURIComponent(r.employee_name)}&hours=${r.hours}`,
+                                        displayText: `確認 ${r.employee_name} 的加班`
+                                    },
+                                    style: 'primary',
+                                    color: '#0E7C86',
+                                    height: 'sm'
+                                },
+                                {
+                                    type: 'button',
+                                    action: {
+                                        type: 'postback',
+                                        label: '❌ 駁回',
+                                        data: `action=reject_overtime&overtime_id=${r.id}&employee_name=${encodeURIComponent(r.employee_name)}`,
+                                        displayText: `駁回 ${r.employee_name} 的加班`
+                                    },
+                                    style: 'secondary',
+                                    height: 'sm'
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }));
+
+            messages.push({
+                type: 'text',
+                text: `⏰ 待確認加班（${records.length} 筆）：`
+            });
+            messages.push({
+                type: 'flex',
+                altText: `待確認加班 ${records.length} 筆`,
+                contents: records.length === 1
+                    ? otBubbles[0]
+                    : { type: 'carousel', contents: otBubbles }
+            });
+        }
+
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: messages.slice(0, 5) // Line max 5 messages per reply
+        });
+
+    } catch (err) {
+        console.error('Pending queue error:', err.message);
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{ type: 'text',
+                text: '❌ 查詢失敗，請稍後再試。' }]
+        });
+    }
+}
+
+async function handleOvertimeConfirm(event, overtimeId, empName, hours) {
+    try {
+        const res = await axios.post(
+            `${process.env.LARAVEL_API}/line/overtime-confirm`,
+            {
+                overtime_id: overtimeId,
+                manager_line_id: event.source.userId,
+            }
+        );
+        
+        const msg = res.data.success
+            ? `✅ 已確認 ${empName} 的加班記錄（${hours} 小時）`
+            : `❌ 操作失敗：${res.data.message}`; 
+
+            return client.replyMessage({
+                replyToken: event.replyToken,
+                messages: [{ type: 'text', text: msg }]
+            });
+
+    } catch (err) {
+        console.error('Overtime confirm error:', err.message);
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{ type: 'text', text: '❌ 操作失敗，請至系統網頁確認。' }]
+        });
+    }
+}
+
+async function handleOvertimeReject(event, overtimeId, empName) {
+    try {
+        const res = await axios.post(
+            `${process.env.LARAVEL_API}/line/overtime-reject`,
+            {
+                overtime_id: overtimeId,
+                manager_line_id: event.source.userId,
+                admin_note: '主管透過 Line 駁回，詳情請至系統查看。'
+            }
+        );
+        
+        const msg = res.data.success
+            ? `❌ 已駁回 ${empName} 的加班記錄`
+            : `❌ 操作失敗：${res.data.message}`;    
+            
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{ type: 'text', text: msg }]
+        });
+
+    } catch (err) {
+        console.error('Overtime reject error:', err.message);
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{ type: 'text', text: '❌ 操作失敗，請至系統網頁確認。' }]
+        });
     }
 }
 
