@@ -152,22 +152,32 @@ class LineController extends Controller
         }
 
         $workedHours       = round($totalMins / 60, 2);
-        $shiftEnd          = Carbon::parse($today . ' ' . $shift->shift_end);
+        $shiftEndTime      = Carbon::parse($today . ' ' . $shift->shift_end);
         $earlyLeaveMinutes = 0;
+        $overtimeMinutes   = 0;
         $status            = $record->status;
 
-        $shiftEndTime = Carbon::parse($today . ' ' . $shift->shift_end);
-        $overtimeMinutes = 0;
+        // Early leave check
+        if ($now->lt($shiftEndTime)) {
+            $minutesEarly = (int) $now->diffInMinutes($shiftEndTime);
+            if ($minutesEarly > $shift->late_tolerance) {
+                $earlyLeaveMinutes = $minutesEarly;
+                if ($status === 'normal') $status = 'early_leave';
+            }
+        }
 
+        // Overtime check
         if ($now->gt($shiftEndTime)) {
-            $overtimeMinutes = (int) $shiftEndTime->diffInMinutes($now);
+            $minutesOver = (int) $shiftEndTime->diffInMinutes($now);
+            if ($minutesOver > $shift->late_tolerance) {
+                $overtimeMinutes = $minutesOver;
+            }
         }
 
         $record->update([
             'clock_out'           => $now,
             'worked_hours'        => $workedHours,
             'early_leave_minutes' => $earlyLeaveMinutes,
-            'overtime_minutes'    => $overtimeMinutes,
             'status'              => $status,
         ]);
 
@@ -181,7 +191,6 @@ class LineController extends Controller
                 'clock_out'           => $now->toIso8601String(),
                 'worked_hours'        => $workedHours,
                 'early_leave_minutes' => $earlyLeaveMinutes,
-                'overtime_minutes'    => $overtimeMinutes,
                 'status'              => $status,
                 'source'              => 'line',
                 'timestamp'           => $now->toIso8601String(),
@@ -581,6 +590,7 @@ class LineController extends Controller
 
     public function lineOvertimeSubmit(Request $request)
     {
+        \Log::info('lineOvertimeSubmit received', $request->all());
         $employee = Employee::where('line_user_id', $request->line_user_id)
             ->where('is_active', true)->first();
 
@@ -605,7 +615,7 @@ class LineController extends Controller
             'end_time'     => $request->end_time,
             'hours'        => $request->hours,
             'overtime_reason'=> $request->overtime_reason,
-            'status'       => '簽核中',
+            'status'       => '待確認',
             'admin_note'   => null,
         ]);
 
@@ -629,4 +639,297 @@ class LineController extends Controller
 
         return response()->json(['success' => true]);
     }   
+
+    public function PendingLeaves(Request $request)
+    {
+        $employee = Employee::where('line_user_id', $request->line_user_id)
+            ->where('is_active', true)->first();
+
+        if (!$employee) {
+            return response()->json([
+                'success' => false,
+                'message' => '找不到員工帳號。'
+            ]);
+        }
+
+        $roleValue = $employee->role instanceof \App\Enums\Role
+            ? $employee->role->value : $employee->role;
+
+        // Active delegator check
+        $effectiveDept = $employee->department;
+        $effectiveRole = $roleValue;
+
+        if (!in_array($roleValue, ['部門主管', '人資部','系統管理者'])) {
+            $delegation = \App\Models\Delegation::with('delegator')
+                ->where('delegatee_id', $employee->id)
+                ->where('is_active', true)
+                ->whereDate('start_date', '<=', now()->toDateString())
+                ->whereDate('end_date', '>=', now()->toDateString())
+                ->first();
+
+            if ($delegation) {
+                $effectiveRole = '部門主管';
+                $effectiveDept = $delegation->delegator->department;
+            }
+        }
+
+        if (!in_array($effectiveRole, ['部門主管', '人資部','系統管理者'])) {
+            return response()->json([
+                'success' => false,
+                'message' => '您沒有審核權限。'
+            ]);
+        }
+
+        $query = \App\Models\LeaveRequest::with('employee')
+            ->where('status', '簽核中');
+
+        if ($effectiveRole === '部門主管') {
+            $query->whereHas('employee', fn ($q) => $q
+                ->where('department', $effectiveDept))
+                ->where('employee_id', '!=', $employee->id)
+                ->where('current_approver', 'manager');
+        } elseif (in_array($effectiveRole, ['人資部','系統管理者'])) {
+            $query->where('current_approver', 'hr');
+        }
+
+        $leaves = $query->orderBy('created_at', 'asc')
+            ->get()
+            ->map(function ($leave) {
+                $type   = $leave->leave_type instanceof \App\Enums\LeaveType
+                    ? $leave->leave_type->value : $leave->leave_type;
+                return [
+                    'id'            => $leave->id,
+                    'employee_name' => $leave->employee->name,
+                    'employee_no'   => $leave->employee->employee_no,
+                    'department'    => $leave->employee->department,
+                    'leave_type'    => $type,
+                    'start_date'    => $leave->start_date->format('Y-m-d'),
+                    'end_date'      => $leave->end_date->format('Y-m-d'),
+                    'days'          => $leave->days,
+                    'leave_reason'  => $leave->leave_reason,
+                ];
+            });
+
+        return response()->json([
+            'success'    => true,
+            'leaves'     => $leaves,
+            'role'       => $effectiveRole,
+            'department' => $effectiveDept,
+        ]);
+    }
+
+    public function PendingOvertime(Request $request)
+    {
+        $employee = Employee::where('line_user_id', $request->line_user_id)
+            ->where('is_active', true)->first();
+
+        if (!$employee) {
+            return response()->json([
+                'success' => false,
+                'message' => '找不到員工帳號。'
+            ]);
+        }
+
+        $roleValue = $employee->role instanceof \App\Enums\Role
+            ? $employee->role->value : $employee->role;
+        $effectiveDept = $employee->department;
+        $effectiveRole = $roleValue;
+
+        if (!in_array($roleValue, ['部門主管', '人資部','系統管理者'])) {
+            $delegation = \App\Models\Delegation::with('delegator')
+                ->where('delegatee_id', $employee->id)
+                ->where('is_active', true)
+                ->whereDate('start_date', '<=', now()->toDateString())
+                ->whereDate('end_date', '>=', now()->toDateString())
+                ->first();
+
+            if ($delegation) {
+                $effectiveRole = '部門主管';
+                $effectiveDept = $delegation->delegator->department;
+            }
+        }
+
+        if (!in_array($effectiveRole, ['部門主管', '人資部','系統管理者'])) {
+            return response()->json([
+                'success' => false,
+                'message' => '您沒有審核權限。'
+            ]);
+        }
+
+        $query = \App\Models\OvertimeRecord::with('employee')
+            ->where('status', '待確認');
+        
+        if ($effectiveRole === '部門主管') {
+            $query->whereHas('employee', fn ($q) => $q
+                ->where('department', $effectiveDept))
+                ->where('employee_id', '!=', $employee->id);
+        } 
+
+        $records = $query->orderBy('date', 'asc')
+            ->get()
+            ->map(function ($record) {
+                return [
+                    'id'            => $record->id,
+                    'employee_name' => $record->employee->name,
+                    'employee_no'   => $record->employee->employee_no,
+                    'department'    => $record->employee->department,
+                    'date'          => $record->date->format('Y-m-d'),
+                    'start_time'    => $record->start_time,
+                    'end_time'      => $record->end_time,
+                    'hours'         => $record->hours,
+                    'overtime_reason'=> $record->overtime_reason,
+                ];
+            });
+
+        return response()->json([
+            'success'    => true,
+            'records'    => $records,
+            'role'       => $effectiveRole,
+        ]);
+    }
+
+    public function lineOvertimeConfirm(Request $request)
+    {
+        $manager = Employee::where('line_user_id', $request->manager_user_id)
+            ->whereIn('role', ['部門主管', '人資部', '系統管理者'])
+            ->first();
+
+        if (!$manager) {
+            $delegation = \App\Models\Delegation::with('delegator')
+                ->where('delegate', fn($q) => $q->where('line_user_id', $request->manager_user_id))
+                ->where('is_active', true)
+                ->whereDate('start_date', '<=', now()->toDateString())
+                ->whereDate('end_date', '>=', now()->toDateString())
+                ->first();
+
+            if ($delegation) {
+                $manager = $delegation->delegator;
+            }
+        }
+
+        if ($manager){
+            return response()->json([
+                'success' => false,
+                'message' => '您沒有審核權限。'
+            ]);
+        }
+
+        $record = \App\Models\OvertimeRecord::with('employee')
+            ->find($request->overtime_id);
+
+        if (!$record ) {
+            return response()->json([
+                'success' => false,
+                'message' => '找不到此加班申請。'
+            ]);
+        }
+
+        $otStatus = $record->status instanceof \App\Enums\OvertimeStatus
+            ? $record->status->value : $record->status;
+
+        if ($otStatus !== '待確認') {
+            return response()->json([
+                'success' => false,
+                'message' => '加班申請狀態已變更。'
+            ]);
+        }
+
+        $record->update([
+            'status'     => '已確認',
+            'admin_note' => $request->admin_note,
+        ]);
+
+        $record->employee->increment('compensatory_hours_remaining', $record->hours);
+        try {
+            $mqtt = new \App\Services\MqttService();
+            $mqtt->publish('overtime/confirmed', [
+                'employee_id'   => $record->employee_id,
+                'employee_name' => $record->employee->name,
+                'employee_no'   => $record->employee->employee_no,
+                'date'          => $record->date->format('Y-m-d'),
+                'start_time'    => $record->start_time,
+                'end_time'      => $record->end_time,
+                'hours'         => $record->hours,
+                'admin_note'    => $request->admin_note,
+                'confirmed_by'  => $manager?->name ?? '代理主管',
+                'timestamp'     => now()->toIso8601String(),
+            ]);
+        } catch (\Exception $e) {}
+
+        try {
+            $empLineId = $record->employee->line_user_id;
+            if ($empLineId) {
+                $lineClient = new \LINE\LINEBot(
+                    new \LINE\LINEBot\HTTPClient\CurlHTTPClient(env('LINE_CHANNEL_ACCESS_TOKEN')),
+                    ['channelSecret' => env('LINE_CHANNEL_SECRET'),
+                ]);
+        } catch (\Exception $e) {}
+
+        return response()->json(['success' => true]);
+    }
+
+    public function  lineOvertimeReject (request $request){
+        $manager = Employee::where('line_user_id', $request->manager_user_id)
+            ->whereIn('role', ['部門主管', '人資部', '系統管理者'])
+            ->first();
+
+        if (!$manager) {
+            $delegation = \App\Models\Delegation::with('delegator')
+                ->where('delegate', fn($q) => $q
+                ->where('line_user_id', $request->manager_user_id))
+                ->where('is_active', true)
+                ->whereDate('start_date', '<=', now()->toDateString())
+                ->whereDate('end_date', '>=', now()->toDateString())
+                ->first();
+
+            if ($delegation) {
+                $manager = $delegation->delegator;
+            }
+        }
+
+        if ($manager){
+            return response()->json([
+                'success' => false,
+                'message' => '無拒絕權限。'
+            ]);
+        }
+
+        $record = \App\Models\OvertimeRecord::find($request->overtime_id);
+
+        if (!$record ) {
+            return response()->json([
+                'success' => false,
+                'message' => '找不到此加班申請。'
+            ]);
+        }
+
+        $otStatus = $record->status instanceof \App\Enums\OvertimeStatus
+            ? $record->status->value : $record->status;
+
+        if ($otStatus !== '待確認') {
+            return response()->json([
+                'success' => false,
+                'message' => '加班申請狀態已變更。'
+            ]);
+        }
+
+        $record->update([
+            'status'     => '已拒絕',
+            'admin_note' => $request->admin_note,
+        ]);
+
+        try {
+            $mqtt = new \App\Services\MqttService();
+            $mqtt->publish('overtime/rejected', [
+                'employee_id'   => $record->employee_id,
+                'employee_name' => $record->employee->name,
+                'employee_no'   => $record->employee->employee_no,
+                'date'          => $record->date->format('Y-m-d'),
+                'start_time'    => $record->start_time,
+                'end_time'      => $record->end_time,
+                'hours'         => $record->hours,
+                'admin_note'    => $request->admin_note,
+            ]);
+        } catch (\Exception $e) {}
+    }
 }

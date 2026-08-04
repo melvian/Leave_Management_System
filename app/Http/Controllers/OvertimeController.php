@@ -41,7 +41,6 @@ class OvertimeController extends Controller
         }
     
         $employee = Auth::user();
-
         $request->validate([
             'date'            => 'required|date|before_or_equal:today',
             'start_time'      => 'required',
