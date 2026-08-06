@@ -629,10 +629,10 @@ class AttendanceMonitor(tk.Tk):
         note = data.get("admin_note", "?")
 
         self._feed_write(f"[{t}] ", "time")
-        self._feed_write("❌ 加班駁回  ", "leave_rejected")
-        self._feed_write(f"{name} 的加班申請已駁回 — {note}\n")
+        self._feed_write("❌ 加班拒絕  ", "overtime_rejected")
+        self._feed_write(f"{name} 的加班申請已拒絕 — {note}\n")
 
-        toast("加班駁回", f"{name}\n{note}")
+        toast("加班拒絕", f"{name}\n{note}")
 
     # ── System tray ───────────────────────────────────
     def _setup_tray(self):
