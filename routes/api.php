@@ -25,6 +25,7 @@ Route::delete('/overtime-records/{id}',[OvertimeRecordApiController::class, 'des
 
 Route::get('/line/balance',         [App\Http\Controllers\Api\LineController::class, 'balance']);
 Route::get('/line/my-leaves',       [App\Http\Controllers\Api\LineController::class, 'myLeaves']);
+Route::get('/line/my-overtime',     [App\Http\Controllers\Api\LineController::class, 'myOvertime']);
 Route::get('/line/user-id',         [App\Http\Controllers\Api\LineController::class, 'getUserId']);
 Route::get('/line/hr',              [App\Http\Controllers\Api\LineController::class, 'getHrLineId']);
 Route::get('/line/manager',         [App\Http\Controllers\Api\LineController::class, 'getManagerLineId']);

@@ -277,6 +277,44 @@ class LineController extends Controller
         ]);
     }
 
+    public function myOvertime(Request $request)
+    {
+        $employee = Employee::where('line_user_id', $request->line_user_id)
+            ->where('is_active', true)->first();
+
+        if (!$employee) {
+            return response()->json([
+                'success' => false,
+                'message' => '找不到員工帳號。'
+            ]);
+        }
+
+        $records = \App\Models\OvertimeRecord::where('employee_id', $employee->id)
+            ->orderBy('date', 'desc')
+            ->limit(5)
+            ->get()
+            ->map(function ($r) {
+                $status = $r->status instanceof \App\Enums\OvertimeStatus
+                    ? $r->status->value : $r->status;
+                return [
+                    'id'             => $r->id,
+                    'date'           => $r->date->format('Y-m-d'),
+                    'start_time'     => $r->start_time,
+                    'end_time'       => $r->end_time,
+                    'hours'          => $r->hours,
+                    'overtime_reason'=> $r->overtime_reason,
+                    'status'         => $status,
+                    'admin_note'     => $r->admin_note,
+                ];
+            });
+
+        return response()->json([
+            'success' => true,
+            'name'    => $employee->name,
+            'records' => $records,
+        ]);
+    }
+
     public function getUserId(Request $request)
     {
         $employee = Employee::find($request->employee_id);
@@ -646,25 +684,23 @@ class LineController extends Controller
             ->where('is_active', true)->first();
 
         if (!$employee) {
-            return response()->json([
-                'success' => false,
-                'message' => '找不到員工帳號。'
-            ]);
+            return response()->json(['success' => false,
+                'message' => '找不到員工帳號。']);
         }
 
         $roleValue = $employee->role instanceof \App\Enums\Role
             ? $employee->role->value : $employee->role;
 
-        // Active delegator check
         $effectiveDept = $employee->department;
         $effectiveRole = $roleValue;
 
-        if (!in_array($roleValue, ['部門主管', '人資部','系統管理者'])) {
+        // Check delegation
+        if (!in_array($roleValue, ['部門主管', '人資部', '系統管理者'])) {
             $delegation = \App\Models\Delegation::with('delegator')
-                ->where('delegatee_id', $employee->id)
+                ->where('delegate_id', $employee->id)
                 ->where('is_active', true)
                 ->whereDate('start_date', '<=', now()->toDateString())
-                ->whereDate('end_date', '>=', now()->toDateString())
+                ->whereDate('end_date',   '>=', now()->toDateString())
                 ->first();
 
             if ($delegation) {
@@ -673,11 +709,9 @@ class LineController extends Controller
             }
         }
 
-        if (!in_array($effectiveRole, ['部門主管', '人資部','系統管理者'])) {
-            return response()->json([
-                'success' => false,
-                'message' => '您沒有審核權限。'
-            ]);
+        if (!in_array($effectiveRole, ['部門主管', '人資部', '系統管理者'])) {
+            return response()->json(['success' => false,
+                'message' => '您沒有審核權限。']);
         }
 
         $query = \App\Models\LeaveRequest::with('employee')
@@ -724,23 +758,23 @@ class LineController extends Controller
             ->where('is_active', true)->first();
 
         if (!$employee) {
-            return response()->json([
-                'success' => false,
-                'message' => '找不到員工帳號。'
-            ]);
+            return response()->json(['success' => false,
+                'message' => '找不到員工帳號。']);
         }
 
         $roleValue = $employee->role instanceof \App\Enums\Role
             ? $employee->role->value : $employee->role;
+
         $effectiveDept = $employee->department;
         $effectiveRole = $roleValue;
 
-        if (!in_array($roleValue, ['部門主管', '人資部','系統管理者'])) {
+        // Check delegation
+        if (!in_array($roleValue, ['部門主管', '人資部', '系統管理者'])) {
             $delegation = \App\Models\Delegation::with('delegator')
-                ->where('delegatee_id', $employee->id)
+                ->where('delegate_id', $employee->id)
                 ->where('is_active', true)
                 ->whereDate('start_date', '<=', now()->toDateString())
-                ->whereDate('end_date', '>=', now()->toDateString())
+                ->whereDate('end_date',   '>=', now()->toDateString())
                 ->first();
 
             if ($delegation) {
@@ -749,11 +783,9 @@ class LineController extends Controller
             }
         }
 
-        if (!in_array($effectiveRole, ['部門主管', '人資部','系統管理者'])) {
-            return response()->json([
-                'success' => false,
-                'message' => '您沒有審核權限。'
-            ]);
+        if (!in_array($effectiveRole, ['部門主管', '人資部', '系統管理者'])) {
+            return response()->json(['success' => false,
+                'message' => '您沒有審核權限。']);
         }
 
         $query = \App\Models\OvertimeRecord::with('employee')
@@ -790,13 +822,21 @@ class LineController extends Controller
 
     public function lineOvertimeConfirm(Request $request)
     {
-        $manager = Employee::where('line_user_id', $request->manager_user_id)
-            ->whereIn('role', ['部門主管', '人資部', '系統管理者'])
-            ->first();
+        $managerEmp = Employee::where('line_user_id', $request->manager_line_id)
+            ->where('is_active', true)->first();
+
+        $manager = null;
+        if ($managerEmp) {
+            $managerRole = $managerEmp->role instanceof \App\Enums\Role
+                ? $managerEmp->role->value : $managerEmp->role;
+            if (in_array($managerRole, ['部門主管', '人資部', '系統管理者'])) {
+                $manager = $managerEmp;
+            }
+        }
 
         if (!$manager) {
             $delegation = \App\Models\Delegation::with('delegator')
-                ->where('delegate', fn($q) => $q->where('line_user_id', $request->manager_user_id))
+                ->where('delegate', fn($q) => $q->where('line_user_id', $request->manager_line_id))
                 ->where('is_active', true)
                 ->whereDate('start_date', '<=', now()->toDateString())
                 ->whereDate('end_date', '>=', now()->toDateString())
@@ -863,20 +903,29 @@ class LineController extends Controller
                     new \LINE\LINEBot\HTTPClient\CurlHTTPClient(env('LINE_CHANNEL_ACCESS_TOKEN')),
                     ['channelSecret' => env('LINE_CHANNEL_SECRET'),
                 ]);
+            }
         } catch (\Exception $e) {}
 
         return response()->json(['success' => true]);
     }
 
     public function  lineOvertimeReject (request $request){
-        $manager = Employee::where('line_user_id', $request->manager_user_id)
-            ->whereIn('role', ['部門主管', '人資部', '系統管理者'])
-            ->first();
+        $managerEmp = Employee::where('line_user_id', $request->manager_line_id)
+            ->where('is_active', true)->first();
+
+        $manager = null;
+        if ($managerEmp) {
+            $managerRole = $managerEmp->role instanceof \App\Enums\Role
+                ? $managerEmp->role->value : $managerEmp->role;
+            if (in_array($managerRole, ['部門主管', '人資部', '系統管理者'])) {
+                $manager = $managerEmp;
+            }
+        }
 
         if (!$manager) {
             $delegation = \App\Models\Delegation::with('delegator')
                 ->where('delegate', fn($q) => $q
-                ->where('line_user_id', $request->manager_user_id))
+                ->where('line_user_id', $request->manager_line_id))
                 ->where('is_active', true)
                 ->whereDate('start_date', '<=', now()->toDateString())
                 ->whereDate('end_date', '>=', now()->toDateString())
