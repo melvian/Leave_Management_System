@@ -28,7 +28,7 @@ const LEAVE_STEPS = {
     START_TIME:  'start_time',
     END_TIME:    'end_time',
     REASON:      'reason',
-    CONFIRM:     'confirm'
+    CONFIRM:     'confirm',
 };
 
 const LEAVE_TYPES = ['特休假', '病假', '事假', '公假', '補休', '生理假'];
@@ -37,7 +37,15 @@ const OVERTIME_STEPS = {
     SELECT_START: 'ot_select_start',
     SELECT_END:   'ot_select_end',
     REASON:       'ot_reason',
-    CONFIRM:      'ot_confirm'
+    CONFIRM:      'ot_confirm',
+};
+
+const DELEGATION_STEPS = {
+    SELECT_DELEGATE: 'del_select_delegate',
+    START_DELEGATE: 'del_start_delegate',
+    END_DELEGATE: 'del_end_delegate',
+    REASON: 'del_reason',
+    CONFIRM: 'del_confirm',
 };
 
 // Line webhook must use raw body for signature verification
@@ -72,12 +80,16 @@ async function handleEvent(event) {
 
     console.log(`Message from ${userId}: ${text}`);
 
-    // If user is in a leave application flow, handle their input
+    // If user is in a guided flow, handle their input
     if (userState[userId] && text !== '取消') {
         const step = userState[userId].step;
 
         if (Object.values(OVERTIME_STEPS).includes(step)) {
             return handleOvertimeFlow(event, userId, text);
+        }
+
+        if (Object.values(DELEGATION_STEPS).includes(step)){
+            return handleDelegationFlow(event, userId, text);
         }
         return handleLeaveFlow(event, userId, text);
     }
@@ -111,7 +123,7 @@ async function handleEvent(event) {
         return handleCancel(event, userId);
     }
 
-    if (text === '我的id' || text === 'my id' || text === '我的LineID') {
+    if (text === '我的id' || text === '我的LineID') {
         return client.replyMessage({
             replyToken: event.replyToken,
             messages: [{ type: 'text', text: `您的 Line User ID 是：\n\n${userId}\n\n請將此 ID 提供給人資部，以完成 Line 帳號綁定。` }]
@@ -126,9 +138,18 @@ async function handleEvent(event) {
         return handleMyOvertime(event, userId);
     }
 
-    if (text === '待審' || text === '待審清單' || text === '待審') {
+    if (text === '待審' || text === '待審清單' || text === '審核') {
         return handlePendingQueue(event, userId);
     }
+
+    if (text === '代理' || text === '設定代理') {
+        return handleDelegationStart(event, userId);
+    }
+
+    if (text === '我的代理') {
+        return handleMyDelegation(event, userId);
+    }
+
 
     // Default reply
     return client.replyMessage({
@@ -319,7 +340,9 @@ async function handleHelp(event) {
                 '我的假期 → 查詢假期餘額\n' +
                 '我的請假 → 查看請假記錄\n' + 
                 '我的加班 → 查看加班記錄\n' +
-                '待審清單 → 查看待審核的申請\n' +
+                '設定代理 → 設定簽核代理人（主管）\n' +
+                '我的代理 → 查看目前代理設定（主管）\n' +
+                '待審　　 → 查看待審核的申請\n' +
                 '我的LineID → 取得您的 Line User ID\n' +
                 '說明　　 → 顯示此說明'
         }]
@@ -1408,6 +1431,100 @@ async function handleMyLeave(event, userId) {
     }
 }
 
+async function handleMyOvertime(event, userId) {
+    try {
+        const res = await axios.get(
+            `${process.env.LARAVEL_API}/line/my-overtime`,
+            { params: { line_user_id: userId } }
+        );
+
+        const d = res.data;
+
+        if (!d.success) {
+            return client.replyMessage({
+                replyToken: event.replyToken,
+                messages: [{ type: 'text', text: `❌ ${d.message}` }]
+            });
+        }
+
+        if (!d.records || d.records.length === 0) {
+            return client.replyMessage({
+                replyToken: event.replyToken,
+                messages: [{ type: 'text',
+                    text: `${d.name} 目前沒有加班記錄。` }]
+            });
+        }
+
+        const statusEmoji = {
+            '待確認': '⏳',
+            '已確認': '✅',
+            '已駁回': '❌',
+        };
+
+        const bubbles = d.records.map(r => ({
+            type: 'bubble',
+            size: 'kilo',
+            header: {
+                type: 'box',
+                layout: 'horizontal',
+                contents: [
+                    {
+                        type: 'text',
+                        text: `⏰ ${r.date}`,
+                        color: '#ffffff',
+                        size: 'sm',
+                        weight: 'bold',
+                        flex: 3
+                    },
+                    {
+                        type: 'text',
+                        text: `${statusEmoji[r.status] || '❓'} ${r.status}`,
+                        color: '#ffffff',
+                        size: 'sm',
+                        align: 'end',
+                        flex: 2
+                    }
+                ],
+                backgroundColor: r.status === '已確認' ? '#198754'
+                    : r.status === '已駁回'            ? '#dc3545'
+                    : '#0E7C86',
+                paddingAll: '12px'
+            },
+            body: {
+                type: 'box',
+                layout: 'vertical',
+                spacing: 'sm',
+                paddingAll: '12px',
+                contents: [
+                    makeRow('時段', `${r.start_time} – ${r.end_time}`),
+                    makeRow('時數', `${r.hours} 小時`),
+                    makeRow('事由', r.overtime_reason || '—'),
+                    ...(r.admin_note ? [makeRow('備註', r.admin_note)] : []),
+                ]
+            }
+        }));
+
+        const contents = bubbles.length === 1
+            ? bubbles[0]
+            : { type: 'carousel', contents: bubbles };
+
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [
+                { type: 'text', text: `${d.name} 的最近加班記錄（最多5筆）：` },
+                { type: 'flex', altText: '您的加班記錄', contents }
+            ]
+        });
+
+    } catch (err) {
+        console.error('My overtime error:', err.message);
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{ type: 'text', text: '❌ 查詢失敗，請稍後再試。' }]
+        });
+    }
+}
+
 // ── Helper: build a row for Flex Message body ─────
 function makeRow(label, value) {
     return {
@@ -1548,13 +1665,13 @@ async function handlePostback(event) {
         const overtimeId = params.get('overtime_id');
         const empName = decodeURIComponent(params.get('employee_name') || '');
         const hours = params.get('hours');
-        return handleLineOvertimeApprove(event, overtimeId, empName, hours);
+        return handleOvertimeConfirm(event, overtimeId, empName, hours);
     }
 
     if (action === 'reject_overtime') {
         const overtimeId = params.get('overtime_id');
         const empName = decodeURIComponent(params.get('employee_name') || '');
-        return handleLineOvertimeRejectPrompt(event, overtimeId, empName);
+        return handleOvertimeReject(event, overtimeId, empName);
     }
 
     return null;
@@ -2314,9 +2431,9 @@ async function handlePendingQueue(event, userId) {
                                     type: 'button',
                                     action: {
                                         type: 'postback',
-                                        label: '❌ 駁回',
+                                        label: '❌ 拒絕',
                                         data: `action=reject_overtime&overtime_id=${r.id}&employee_name=${encodeURIComponent(r.employee_name)}`,
-                                        displayText: `駁回 ${r.employee_name} 的加班`
+                                        displayText: `拒絕 ${r.employee_name} 的加班`
                                     },
                                     style: 'secondary',
                                     height: 'sm'
@@ -2390,12 +2507,12 @@ async function handleOvertimeReject(event, overtimeId, empName) {
             {
                 overtime_id: overtimeId,
                 manager_line_id: event.source.userId,
-                admin_note: '主管透過 Line 駁回，詳情請至系統查看。'
+                admin_note: '主管透過 Line 拒絕，詳情請至系統查看。'
             }
         );
         
         const msg = res.data.success
-            ? `❌ 已駁回 ${empName} 的加班記錄`
+            ? `❌ 已拒絕 ${empName} 的加班記錄`
             : `❌ 操作失敗：${res.data.message}`;    
             
         return client.replyMessage({
