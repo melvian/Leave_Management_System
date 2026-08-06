@@ -1,3 +1,4 @@
+print(__file__)
 import tkinter as tk
 from tkinter import ttk
 import paho.mqtt.client as mqtt
@@ -8,6 +9,7 @@ from datetime import datetime
 import pystray
 from PIL import Image, ImageDraw, ImageFont
 import plyer
+import winsound
 
 # ── Config ───────────────────────────────────────────
 BROKER_HOST      = "localhost"
@@ -21,20 +23,29 @@ TOPICS = [
 ]
 
 
-# ── Build tray clock icon image ────────────────────────────
+# ── Build tray icon image ────────────────────────────
 def make_tray_icon():
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    size = 64
+    img  = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    # Blue circle
-    draw.ellipse([4, 4, 60, 60], fill=(31, 56, 100))
+    # Navy circle background
+    draw.ellipse([2, 2, size-2, size-2], fill=(31, 56, 100))
 
-    # Clock outline
-    draw.ellipse([16, 16, 48, 48], outline="white", width=3)
+    # White inner ring
+    draw.ellipse([8, 8, size-8, size-8],
+                 outline=(255, 255, 255), width=2)
 
-    # Clock hands
-    draw.line((32, 32, 32, 22), fill="white", width=3)
-    draw.line((32, 32, 40, 38), fill="white", width=3)
+    # Try to draw Chinese character, fallback to "勤"
+    try:
+        # Use a font if available
+        from PIL import ImageFont
+        font = ImageFont.truetype(
+            "C:\\Windows\\Fonts\\msjh.ttc", 28)
+        draw.text((14, 14), "勤", fill="white", font=font)
+    except Exception:
+        # Fallback — draw a simple dot pattern
+        draw.ellipse([24, 24, 40, 40], fill="white")
 
     return img
 
@@ -45,7 +56,7 @@ def toast(title: str, message: str):
         plyer.notification.notify(
             title=title,
             message=message,
-            app_name="Attendance Monitor",
+            app_name="差勤監控",
             timeout=4,
         )
     except Exception:
@@ -57,7 +68,7 @@ class AttendanceMonitor(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("Attendance Monitor")
+        self.title("差勤即時監控")
         self.geometry("960x680")
         self.configure(bg="#1F3864")
         self.resizable(True, True)
@@ -86,12 +97,12 @@ class AttendanceMonitor(tk.Tk):
         header = tk.Frame(self, bg="#1F3864", pady=10)
         header.pack(fill="x", padx=20)
 
-        tk.Label(header, text="Attendance Monitor",
+        tk.Label(header, text="差勤即時監控系統",
                  font=("TkDefaultFont", 16, "bold"),
                  fg="white", bg="#1F3864").pack(side="left")
 
         self.conn_label = tk.Label(header,
-                 text="● Connected",
+                 text="● 連線中",
                  font=("TkDefaultFont", 11),
                  fg="#4ade80", bg="#1F3864")
         self.conn_label.pack(side="right")
@@ -110,14 +121,14 @@ class AttendanceMonitor(tk.Tk):
             "clocked_in": tk.StringVar(value="0"),
             "late":       tk.StringVar(value="0"),
             "leave":      tk.StringVar(value="0"),
-            "Absent":    tk.StringVar(value="0"),
+            "pending":    tk.StringVar(value="0"),
         }
 
         for label, key, color in [
-            ("Clocked In", "clocked_in", "#4ade80"),
-            ("Late",       "late",       "#facc15"),
-            ("On Leave",   "leave",      "#60a5fa"),
-            ("Absent",     "Absent",     "#f87171"),
+            ("已打卡上班", "clocked_in", "#4ade80"),
+            ("遲到",       "late",       "#facc15"),
+            ("請假中",     "leave",      "#60a5fa"),
+            ("待審請假",   "pending",    "#f87171"),
         ]:
             card = tk.Frame(stats_frame, bg="#2E74B5",
                            relief="flat", padx=15, pady=8)
@@ -148,9 +159,9 @@ class AttendanceMonitor(tk.Tk):
         att_frame   = tk.Frame(notebook, bg="#f4f7fb")
         leave_frame = tk.Frame(notebook, bg="#f4f7fb")
 
-        notebook.add(feed_frame,  text="  Live Feed  ")
-        notebook.add(att_frame,   text="  Today's Attendance  ")
-        notebook.add(leave_frame, text="  Pending Leave Applications  ")
+        notebook.add(feed_frame,  text="  即時動態  ")
+        notebook.add(att_frame,   text="  今日打卡  ")
+        notebook.add(leave_frame, text="  待審請假  ")
 
         self._build_feed_tab(feed_frame)
         self._build_attendance_tab(att_frame)
@@ -187,15 +198,15 @@ class AttendanceMonitor(tk.Tk):
         filter_bar = tk.Frame(parent, bg="#f4f7fb", pady=6)
         filter_bar.pack(fill="x", padx=8)
 
-        tk.Label(filter_bar, text="Department Filter:",
+        tk.Label(filter_bar, text="部門篩選：",
                  font=("TkDefaultFont", 10),
                  bg="#f4f7fb").pack(side="left")
 
-        self.dept_var = tk.StringVar(value="All Departments")
+        self.dept_var = tk.StringVar(value="全部部門")
         self.dept_combo = ttk.Combobox(
             filter_bar,
             textvariable=self.dept_var,
-            values=["All Departments"],
+            values=["全部部門"],
             state="readonly",
             width=16,
             font=("TkDefaultFont", 10)
@@ -205,15 +216,15 @@ class AttendanceMonitor(tk.Tk):
                              lambda e: self._apply_dept_filter())
 
         # Clear filter button
-        tk.Button(filter_bar, text="Clear Filter",
+        tk.Button(filter_bar, text="清除篩選",
                   font=("TkDefaultFont", 9),
                   bg="#e2e8f0", relief="flat", padx=8,
                   command=self._clear_dept_filter
                   ).pack(side="left")
 
         # ── Treeview ─────────────────────────────────
-        cols = ("Employee ID", "Name", "Department",
-                "Clock In", "Clock Out", "Hours", "Status")
+        cols = ("員工編號", "姓名", "部門",
+                "上班打卡", "下班打卡", "工時", "狀態")
         self.att_tree = ttk.Treeview(
             parent, columns=cols,
             show="headings", height=20
@@ -240,8 +251,8 @@ class AttendanceMonitor(tk.Tk):
 
 
     def _build_leave_tab(self, parent):
-        cols = ("Leave ID","Employee","Department",
-                "Leave Type","Start","End","Days","Status")
+        cols = ("假單ID","員工","部門",
+                "假別","開始","結束","天數","狀態")
         self.leave_tree = ttk.Treeview(
             parent, columns=cols,
             show="headings", height=20
@@ -265,7 +276,7 @@ class AttendanceMonitor(tk.Tk):
     def _update_dept_combo(self, dept: str):
         """Add new department to combo if not already there."""
         self._departments.add(dept)
-        values = ["All Departments"] + sorted(self._departments)
+        values = ["全部部門"] + sorted(self._departments)
         self.dept_combo["values"] = values
 
 
@@ -277,7 +288,7 @@ class AttendanceMonitor(tk.Tk):
         self.att_rows = {}
         # Re-insert filtered data
         for emp_id, d in self.att_data.items():
-            if selected == "All Departments" or d["department"] == selected:
+            if selected == "全部部門" or d["department"] == selected:
                 tag    = d.get("tag", "normal")
                 row_id = self.att_tree.insert(
                     "", "end",
@@ -295,7 +306,7 @@ class AttendanceMonitor(tk.Tk):
 
 
     def _clear_dept_filter(self):
-        self.dept_var.set("All Departments")
+        self.dept_var.set("全部部門")
         self._apply_dept_filter()
 
 
@@ -323,7 +334,7 @@ class AttendanceMonitor(tk.Tk):
             thread.start()
         except Exception:
             self.after(0, lambda: self.conn_label.config(
-                text="● Connection Failed. Reconnecting...", fg="#f87171"))
+                text="● 連線失敗 重試中...", fg="#f87171"))
             self._schedule_reconnect()
 
 
@@ -340,7 +351,7 @@ class AttendanceMonitor(tk.Tk):
                 self._mqtt.reconnect()
             except Exception:
                 self.after(0, lambda: self.conn_label.config(
-                    text=f"● Reconnecting... ({RECONNECT_DELAY}s)",
+                    text=f"● 重連中... ({RECONNECT_DELAY}s)",
                     fg="#fb923c"))
                 timer = threading.Timer(
                     RECONNECT_DELAY, attempt)
@@ -357,23 +368,22 @@ class AttendanceMonitor(tk.Tk):
             self._mqtt_connected = True
             self._reconnecting   = False
             self.after(0, lambda: self.conn_label.config(
-                text="● Connected", fg="#4ade80"))
+                text="● 連線中", fg="#4ade80"))
             for topic in TOPICS:
                 client.subscribe(topic, qos=1)
-            # Feed notice on reconnect (only after first connect)
             if hasattr(self, '_was_connected'):
                 self.after(0, self._feed_reconnect_notice)
             self._was_connected = True
         else:
             self.after(0, lambda: self.conn_label.config(
-                text="● Connection Failed", fg="#f87171"))
+                text="● 連線失敗", fg="#f87171"))
 
 
-    def _on_disconnect(self, client, userdata, flags, reason_code, properties):
+    def _on_disconnect(self, client, userdata, flags, reason_code, properties ):
         self._mqtt_connected = False
         if not self._quit_flag:
             self.after(0, lambda: self.conn_label.config(
-                text="● Disconnected. Reconnecting...", fg="#f87171"))
+                text="● 已斷線 重連中...", fg="#f87171"))
             self._schedule_reconnect()
 
 
@@ -389,7 +399,7 @@ class AttendanceMonitor(tk.Tk):
     def _feed_reconnect_notice(self):
         t = datetime.now().strftime("%H:%M:%S")
         self._feed_write(f"[{t}] ", "time")
-        self._feed_write("🔄 Reconnected to MQTT Broker\n", "reconnect")
+        self._feed_write("🔄 已重新連線至 MQTT Broker\n", "reconnect")
 
 
     # ── Message handlers ──────────────────────────────
@@ -406,9 +416,12 @@ class AttendanceMonitor(tk.Tk):
             self._handle_leave_approved(data, t)
         elif topic == "leave/rejected":
             self._handle_leave_rejected(data, t)
+        elif topic == "overtime/submitted":
+            self._handle_overtime_submitted(data, t)
         elif topic == "overtime/confirmed":
             self._handle_overtime(data, t)
-
+        elif topic == "overtime/rejected":
+            self._handle_overtime_rejected(data, t) 
 
     def _handle_clock_in(self, data, t):
         name   = data.get("employee_name", "?")
@@ -421,20 +434,20 @@ class AttendanceMonitor(tk.Tk):
         tag    = "late" if late > 0 else "normal"
 
         # ── Sound ────────────────────────────────────
-        self.bell()
+        winsound.MessageBeep(winsound.MB_ICONASTERISK)
 
         # ── Feed ─────────────────────────────────────
         self._feed_write(f"[{t}] ", "time")
-        self._feed_write("🟢 Clock In  ", "clock_in")
-        self._feed_write(f"{name} ({no}) {dept}")
+        self._feed_write("🟢 上班打卡  ", "clock_in")
+        self._feed_write(f"{name}（{no}）{dept}")
         if late > 0:
-            self._feed_write(f"  ⚠ Late {late} minutes\n", "late")
+            self._feed_write(f"  ⚠ 遲到 {late} 分鐘\n", "late")
         else:
-            self._feed_write("  On time\n", "clock_in")
+            self._feed_write("  準時\n", "clock_in")
 
         # ── Toast ────────────────────────────────────
-        msg = f"Late {late} minutes" if late > 0 else "On time"
-        toast("Clock In", f"{name} ({dept}) {msg}")
+        msg = f"遲到 {late} 分鐘" if late > 0 else "準時上班"
+        toast("上班打卡", f"{name}（{dept}）{msg}")
 
         # ── Update dept combo ────────────────────────
         self._update_dept_combo(dept)
@@ -447,14 +460,14 @@ class AttendanceMonitor(tk.Tk):
             "clock_in":    ci_str,
             "clock_out":   "—",
             "worked_hours":"—",
-            "status_label": "Late" if late > 0 else "On Time",
+            "status_label": "遲到" if late > 0 else "正常",
             "tag":         tag,
             "late":        late,
         }
 
         # ── Attendance tree ──────────────────────────
         selected = self.dept_var.get()
-        if selected == "All Departments" or selected == dept:
+        if selected == "全部部門" or selected == dept:
             if emp_id in self.att_rows:
                 row_id = self.att_rows[emp_id]
                 vals   = list(self.att_tree.item(row_id, "values"))
@@ -465,7 +478,7 @@ class AttendanceMonitor(tk.Tk):
                     "", 0,
                     values=(no, name, dept, ci_str,
                             "—", "—",
-                            "Late" if late > 0 else "On Time"),
+                            "遲到" if late > 0 else "正常"),
                     tags=(tag,)
                 )
                 self.att_rows[emp_id] = row_id
@@ -487,21 +500,21 @@ class AttendanceMonitor(tk.Tk):
         co_str = raw_co[11:16] if len(raw_co) >= 16 else raw_co
 
         # ── Sound ────────────────────────────────────
-        self.bell()
+        winsound.MessageBeep(winsound.MB_ICONASTERISK)
 
         # ── Feed ─────────────────────────────────────
         self._feed_write(f"[{t}] ", "time")
-        self._feed_write("🔵 Clock Out  ", "clock_out")
-        self._feed_write(f"{name}  Hours {hours}h")
+        self._feed_write("🔵 下班打卡  ", "clock_out")
+        self._feed_write(f"{name}  工時 {hours} 小時")
         if early > 0:
-            self._feed_write(f"  ⚠ Early Leave {early} minutes\n", "late")
+            self._feed_write(f"  ⚠ 早退 {early} 分鐘\n", "late")
         else:
             self._feed_write("\n", "clock_out")
 
         # ── Toast ────────────────────────────────────
-        msg = f"Hours {hours}h Early Leave {early} minutes" if early > 0 \
-              else f"Hours {hours}h"
-        toast("Clock Out", f"{name} {msg}")
+        msg = f"工時 {hours}h 早退 {early} 分" if early > 0 \
+              else f"工時 {hours} 小時"
+        toast("下班打卡", f"{name} {msg}")
 
         # ── Update stored data ───────────────────────
         if emp_id in self.att_data:
@@ -527,13 +540,13 @@ class AttendanceMonitor(tk.Tk):
         dept  = data.get("department",    "?")
 
         # ── Sound + Feed ─────────────────────────────
-        self.bell()
+        winsound.MessageBeep(winsound.MB_ICONASTERISK)
         self._feed_write(f"[{t}] ", "time")
-        self._feed_write("📋 New Leave Application  ", "leave_submitted")
-        self._feed_write(f"{name} applied for {ltype} from {start} to {end}, {days} days\n")
+        self._feed_write("📋 新請假申請  ", "leave_submitted")
+        self._feed_write(f"{name} 申請 {ltype} {start}~{end} {days}天\n")
 
         # ── Toast ────────────────────────────────────
-        toast("New Leave Application",
+        toast("新請假申請",
               f"{name}（{dept}）\n{ltype} {start}~{end}")
 
         # ── Leave tree ───────────────────────────────
@@ -541,7 +554,7 @@ class AttendanceMonitor(tk.Tk):
             "", 0,
             values=(lid, name, dept,
                     ltype, start, end,
-                    f"{days}days", "pending"),
+                    f"{days}天", "待審核"),
             tags=("pending",)
         )
 
@@ -556,11 +569,11 @@ class AttendanceMonitor(tk.Tk):
         lid   = str(data.get("leave_id", ""))
 
         self._feed_write(f"[{t}] ", "time")
-        self._feed_write("✅ Leave Approved  ", "leave_approved")
-        self._feed_write(f"{name}'s {ltype} has been approved by {by}\n")
+        self._feed_write("✅ 請假核准  ", "leave_approved")
+        self._feed_write(f"{name} 的 {ltype} 已由 {by} 核准\n")
 
-        toast("Leave Approved", f"{name}'s {ltype}\nhas been approved by {by}")
-        self._update_leave_row(lid, "Approved", "approved")
+        toast("請假核准", f"{name} 的 {ltype}\n已由 {by} 核准")
+        self._update_leave_row(lid, "已核准", "approved")
 
         p = int(self.stat_vars["pending"].get())
         self.stat_vars["pending"].set(str(max(0, p - 1)))
@@ -573,11 +586,11 @@ class AttendanceMonitor(tk.Tk):
         lid   = str(data.get("leave_id", ""))
 
         self._feed_write(f"[{t}] ", "time")
-        self._feed_write("❌ Leave Rejected  ", "leave_rejected")
-        self._feed_write(f"{name}'s {ltype} has been rejected — {note}\n")
+        self._feed_write("❌ 請假拒絕  ", "leave_rejected")
+        self._feed_write(f"{name} 的 {ltype} 已拒絕 — {note}\n")
 
-        toast("Leave Rejected", f"{name}'s {ltype}\nReason: {note}")
-        self._update_leave_row(lid, "Rejected", "rejected")
+        toast("請假拒絕", f"{name} 的 {ltype}\n原因：{note}")
+        self._update_leave_row(lid, "已拒絕", "rejected")
 
         p = int(self.stat_vars["pending"].get())
         self.stat_vars["pending"].set(str(max(0, p - 1)))
@@ -588,26 +601,53 @@ class AttendanceMonitor(tk.Tk):
         hours = data.get("hours",          "?")
 
         self._feed_write(f"[{t}] ", "time")
-        self._feed_write("⏰ Overtime Confirmation  ", "overtime")
-        self._feed_write(f"{name} {hours} hours of compensatory time has been added to the balance\n")
+        self._feed_write("⏰ 加班確認  ", "overtime")
+        self._feed_write(f"{name} {hours} 小時補休已加入餘額\n")
 
-        toast("Overtime Confirmation", f"{name}\n{hours} hours of compensatory time has been added to the balance")
+        toast("加班確認", f"{name}\n{hours} 小時補休已加入餘額")
 
+    def _handle_overtime_submitted(self, data, t):
+        name   = data.get("employee_name", "?")
+        no     = data.get("employee_no",   "?")
+        dept   = data.get("department",    "?")
+        hours  = data.get("hours",          "?")
+        date   = data.get("date",          "?")
+        start  = data.get("start_time",    "?")
+        end    = data.get("end_time",      "?")
+
+        winsound.MessageBeep(winsound.MB_ICONASTERISK)
+
+        self._feed_write(f"[{t}] ", "time")
+        self._feed_write("🕐 加班申請  ", "overtime")
+        self._feed_write(f"{name}（{no}）{dept}  {date} {start}–{end}  {hours}小時\n")
+
+        toast("新加班申請",
+            f"{name}（{dept}）\n{date} {start}–{end} {hours}小時")
+
+    def _handle_overtime_rejected(self, data, t):
+        name = data.get("employee_name", "?")
+        note = data.get("admin_note", "?")
+
+        self._feed_write(f"[{t}] ", "time")
+        self._feed_write("❌ 加班駁回  ", "leave_rejected")
+        self._feed_write(f"{name} 的加班申請已駁回 — {note}\n")
+
+        toast("加班駁回", f"{name}\n{note}")
 
     # ── System tray ───────────────────────────────────
     def _setup_tray(self):
         icon_img = make_tray_icon()
 
         menu = pystray.Menu(
-            pystray.MenuItem("Show Window",  self._show_from_tray,
+            pystray.MenuItem("顯示視窗",  self._show_from_tray,
                              default=True),
-            pystray.MenuItem("Quit App",  self._quit_app),
+            pystray.MenuItem("離開系統",  self._quit_app),
         )
 
         self._tray = pystray.Icon(
             "AttendanceMonitor",
             icon_img,
-            "Attendance Monitor",
+            "差勤即時監控",
             menu=menu
         )
 
