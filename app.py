@@ -20,6 +20,7 @@ TOPICS = [
     "attendance/#",
     "leave/#",
     "overtime/#",
+    "delegation/#"
 ]
 
 
@@ -158,14 +159,17 @@ class AttendanceMonitor(tk.Tk):
         feed_frame  = tk.Frame(notebook, bg="#f4f7fb")
         att_frame   = tk.Frame(notebook, bg="#f4f7fb")
         leave_frame = tk.Frame(notebook, bg="#f4f7fb")
+        del_frame   = tk.Frame(notebook, bg="#f4f7fb")
 
         notebook.add(feed_frame,  text="  即時動態  ")
         notebook.add(att_frame,   text="  今日打卡  ")
         notebook.add(leave_frame, text="  待審請假  ")
+        notebook.add(del_frame,   text="  代理設定  ")
 
         self._build_feed_tab(feed_frame)
         self._build_attendance_tab(att_frame)
         self._build_leave_tab(leave_frame)
+        self._build_delegation_tab(del_frame)
 
 
     def _build_feed_tab(self, parent):
@@ -270,6 +274,26 @@ class AttendanceMonitor(tk.Tk):
         self.leave_tree.tag_configure("pending",  background="#fef9c3")
         self.leave_tree.tag_configure("approved", background="#d1fae5")
         self.leave_tree.tag_configure("rejected", background="#fee2e2")
+
+    def _build_delegation_tab(self, parent):
+        cols = ("委託主管", "部門", "代理人", "代理期間", "原因", "來源", "時間")
+        self.del_tree = ttk.Treeview(
+            parent, columns=cols,
+            show="headings", height=20
+        )
+        widths = [100, 90, 100, 160, 120, 60, 80]
+        for col, w in zip(cols, widths):
+            self.del_tree.heading(col, text=col)
+            self.del_tree.column(col, width=w, anchor="center")
+
+        scroll = ttk.Scrollbar(parent, orient="vertical",
+                            command=self.del_tree.yview)
+        self.del_tree.configure(yscrollcommand=scroll.set)
+        self.del_tree.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+
+        self.del_tree.tag_configure("set",     background="#f3e5f5")
+        self.del_tree.tag_configure("revoked", background="#fee2e2")
 
 
     # ── Department filter helpers ─────────────────────
@@ -422,6 +446,10 @@ class AttendanceMonitor(tk.Tk):
             self._handle_overtime(data, t)
         elif topic == "overtime/rejected":
             self._handle_overtime_rejected(data, t) 
+        elif topic == "delegation/set":
+            self._handle_delegation_set(data, t)
+        elif topic == "delegation/revoked":
+            self._handle_delegation_revoked(data, t)
 
     def _handle_clock_in(self, data, t):
         name   = data.get("employee_name", "?")
@@ -633,6 +661,70 @@ class AttendanceMonitor(tk.Tk):
         self._feed_write(f"{name} 的加班申請已拒絕 — {note}\n")
 
         toast("加班拒絕", f"{name}\n{note}")
+
+    def _handle_delegation_set(self, data, t):
+        delegator = data.get("delegator_name", "?")
+        dept      = data.get("delegator_dept", "?")
+        delegate  = data.get("delegate_name",  "?")
+        delegate_no = data.get("delegate_no", "?")
+        start     = data.get("start_date",    "?")
+        end       = data.get("end_date",      "?")
+        reason    = data.get("reason",        "—")
+        source    = data.get("source",        "?")
+
+        # Feed
+        self._feed_write(f"[{t}] ", "time")
+        self._feed_write("👤 新增代理  ", "leave_submitted")
+        self._feed_write(
+            f"{delegator}（{dept}）→ 代理人：{delegate}"
+            f"  {start} ~ {end}\n"
+        )
+
+        # Toast
+        toast("簽核代理設定",
+            f"{delegator} 設定 {delegate} 為代理人\n"
+            f"{start} ~ {end}")
+
+        # Delegation tab
+        self.del_tree.insert(
+            "", 0,
+            values=(
+                delegator, dept, delegate,
+                f"{start} ~ {end}",
+                reason or "—",
+                source,
+                t
+            ),
+            tags=("set",)
+        )
+
+        # Stats — reuse leave stat as delegation indicator
+        import winsound
+        winsound.MessageBeep(winsound.MB_ICONASTERISK)
+
+
+    def _handle_delegation_revoked(self, data, t):
+        delegator = data.get("delegator_name", "?")
+        dept      = data.get("delegator_dept", "?")
+        delegate  = data.get("delegate_name",  "?")
+
+        # Feed
+        self._feed_write(f"[{t}] ", "time")
+        self._feed_write("🚫 代理撤銷  ", "leave_rejected")
+        self._feed_write(f"{delegator}（{dept}）撤銷 {delegate} 的代理資格\n")
+
+        # Toast
+        toast("簽核代理撤銷",
+            f"{delegator} 撤銷了 {delegate} 的代理")
+
+        # Mark existing row as revoked in delegation tab
+        for row in self.del_tree.get_children():
+            vals = self.del_tree.item(row, "values")
+            if vals[0] == delegator and vals[2] == delegate:
+                new_vals    = list(vals)
+                new_vals[5] = "已撤銷"
+                self.del_tree.item(row, values=new_vals, tags=("revoked",))
+                break
 
     # ── System tray ───────────────────────────────────
     def _setup_tray(self):
