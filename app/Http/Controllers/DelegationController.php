@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use App\Models\Delegation;
 use App\Models\Employee;
+use App\Services\MqttService;
 
 class DelegationController extends Controller
 {
@@ -58,6 +59,27 @@ class DelegationController extends Controller
             'is_active'    => true,
         ]);
 
+        try {
+            $delegator = Employee::find($request->delegator_id);
+            $delegate  = Employee::find($request->delegate_id);
+            $mqtt = new \App\Services\MqttService();
+            $mqtt->publish('delegation/set', [
+                'delegator_id'   => $delegator->id,
+                'delegator_name' => $delegator->name,
+                'delegator_dept' => $delegator->department,
+                'delegate_id'    => $delegate->id,
+                'delegate_name'  => $delegate->name,
+                'delegate_no'    => $delegate->employee_no,
+                'start_date'     => $request->start_date,
+                'end_date'       => $request->end_date,
+                'reason'         => $request->reason ?: '',
+                'source'         => 'web',
+                'timestamp'      => now()->toIso8601String(),
+            ]);
+        } catch (\Exception $e) {
+            \Log::warning('MQTT delegation/set failed: ' . $e->getMessage());
+        }
+
         return redirect()->back()
             ->with('success', '簽核代理已建立。');
     }
@@ -77,6 +99,19 @@ class DelegationController extends Controller
         }
 
         $delegation->update(['is_active' => false]);
+
+        try {
+            $mqtt = new \App\Services\MqttService();
+            $mqtt->publish('delegation/revoked', [
+                'delegator_id'   => $delegation->delegator->id,
+                'delegator_name' => $delegation->delegator->name,
+                'delegator_dept' => $delegation->delegator->department,
+                'delegate_name'  => $delegation->delegate->name,
+                'timestamp'      => now()->toIso8601String(),
+            ]);
+        } catch (\Exception $e) {
+            \Log::warning('MQTT delegation/revoked failed: ' . $e->getMessage());
+        }
 
         return redirect()->back()
             ->with('success', '簽核代理已撤銷。');

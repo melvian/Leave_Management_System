@@ -319,8 +319,14 @@ class LineController extends Controller
     {
         $employee = Employee::find($request->employee_id);
 
+        $roleValue = $employee?->role instanceof \App\Enums\Role
+            ? $employee->role->value
+            : $employee?->role;
+
         return response()->json([
-            'line_user_id' => $employee?->line_user_id
+            'line_user_id' => $employee?->line_user_id,
+            'role'         => $roleValue,
+            'name'         => $employee?->name,
         ]);
     }
 
@@ -980,5 +986,188 @@ class LineController extends Controller
                 'admin_note'    => $request->admin_note,
             ]);
         } catch (\Exception $e) {}
+    }
+
+    public function myProfile(Request $request)
+    {
+        $employee = Employee::where('line_user_id', $request->line_user_id)
+            ->where('is_active', true)->first();
+
+        if (!$employee) {
+            return response()->json(['success' => false,
+                'message' => '找不到員工帳號。']);
+        }
+
+        $roleValue = $employee->role instanceof \App\Enums\Role
+            ? $employee->role->value : $employee->role;
+
+        return response()->json([
+            'success'     => true,
+            'employee_id' => $employee->id,
+            'name'        => $employee->name,
+            'role'        => $roleValue,
+            'department'  => $employee->department,
+        ]);
+    }
+
+    public function employeeByNo(Request $request)
+    {
+        $employee = Employee::where('employee_no', $request->employee_no)
+            ->where('is_active', true)->first();
+
+        if (!$employee) {
+            return response()->json(['success' => false,
+                'message' => '找不到員工。']);
+        }
+
+        return response()->json([
+            'success'     => true,
+            'employee_id' => $employee->id,
+            'name'        => $employee->name,
+            'employee_no' => $employee->employee_no,
+        ]);
+    }
+
+    public function lineSetDelegation(Request $request)
+    {
+        $manager = Employee::where('line_user_id', $request->line_user_id)
+            ->where('is_active', true)->first();
+
+        if (!$manager) {
+            return response()->json(['success' => false,
+                'message' => '找不到員工帳號。']);
+        }
+
+        $roleValue = $manager->role instanceof \App\Enums\Role
+            ? $manager->role->value : $manager->role;
+
+        if ($roleValue !== '部門主管') {
+            return response()->json(['success' => false,
+                'message' => '只有部門主管可以設定簽核代理。']);
+        }
+
+        // Check overlap
+        $overlap = \App\Models\Delegation::where('delegator_id', $manager->id)
+            ->where('is_active', true)
+            ->whereDate('end_date', '>=', $request->start_date)
+            ->whereDate('start_date', '<=', $request->end_date)
+            ->exists();
+
+        if ($overlap) {
+            return response()->json(['success' => false,
+                'message' => '此期間已有有效的代理設定，請先撤銷現有代理或調整日期。']);
+        }
+
+        \App\Models\Delegation::create([
+            'delegator_id' => $manager->id,
+            'delegate_id'  => $request->delegate_id,
+            'start_date'   => $request->start_date,
+            'end_date'     => $request->end_date,
+            'reason'       => $request->reason ?: null,
+            'is_active'    => true,
+        ]);
+
+        try {
+            $delegate = Employee::find($request->delegate_id);
+            $mqtt = new \App\Services\MqttService();
+            $mqtt->publish('delegation/set', [
+                'delegator_id'   => $manager->id,
+                'delegator_name' => $manager->name,
+                'delegator_dept' => $manager->department,
+                'delegate_id'    => $request->delegate_id,
+                'delegate_name'  => $delegate?->name,
+                'delegate_no'    => $delegate?->employee_no,
+                'start_date'     => $request->start_date,
+                'end_date'       => $request->end_date,
+                'reason'         => $request->reason ?: '',
+                'source'         => 'line',
+                'timestamp'      => now()->toIso8601String(),
+            ]);
+        } catch (\Exception $e) {
+            \Log::warning('MQTT delegation/set failed: ' . $e->getMessage());
+        }
+
+        return response()->json(['success' => true]);
+    }
+
+    public function lineRevokeDelegation(Request $request)
+    {
+        $manager = Employee::where('line_user_id', $request->line_user_id)
+            ->where('is_active', true)->first();
+
+        if (!$manager) {
+            return response()->json(['success' => false,
+                'message' => '找不到員工帳號。']);
+        }
+
+        $delegation = \App\Models\Delegation::where('id', $request->delegation_id)
+            ->where('delegator_id', $manager->id)
+            ->first();
+
+        if (!$delegation) {
+            return response()->json(['success' => false,
+                'message' => '找不到此代理設定或您無權撤銷。']);
+        }
+
+        $delegation->update(['is_active' => false]);
+
+        try {
+            $mqtt = new \App\Services\MqttService();
+            $mqtt->publish('delegation/revoked', [
+                'delegator_id'   => $manager->id,
+                'delegator_name' => $manager->name,
+                'delegator_dept' => $manager->department,
+                'delegate_name'  => $delegation->delegate->name ?? '',
+                'timestamp'      => now()->toIso8601String(),
+            ]);
+        } catch (\Exception $e) {
+            \Log::warning('MQTT delegation/revoked failed: ' . $e->getMessage());
+        }
+
+        return response()->json(['success' => true]);
+    }
+
+    public function myDelegations(Request $request)
+    {
+        $manager = Employee::where('line_user_id', $request->line_user_id)
+            ->where('is_active', true)->first();
+
+        if (!$manager) {
+            return response()->json(['success' => false,
+                'message' => '找不到員工帳號。']);
+        }
+
+        $roleValue = $manager->role instanceof \App\Enums\Role
+            ? $manager->role->value : $manager->role;
+
+        if ($roleValue !== '部門主管') {
+            return response()->json(['success' => false,
+                'message' => '只有部門主管可以查看代理設定。']);
+        }
+
+        $today       = now()->toDateString();
+        $delegations = \App\Models\Delegation::with('delegate')
+            ->where('delegator_id', $manager->id)
+            ->where('is_active', true)
+            ->whereDate('end_date', '>=', $today)
+            ->orderBy('start_date')
+            ->get()
+            ->map(function ($d) use ($today) {
+                return [
+                    'id'            => $d->id,
+                    'delegate_name' => $d->delegate->name,
+                    'delegate_no'   => $d->delegate->employee_no,
+                    'start_date'    => $d->start_date->format('Y-m-d'),
+                    'end_date'      => $d->end_date->format('Y-m-d'),
+                    'reason'        => $d->reason,
+                    'is_active_now' => $d->start_date->toDateString() <= $today
+                        && $d->end_date->toDateString() >= $today,
+                ];
+            });
+
+        return response()->json([
+            'success'     => true,
+            'delegations' => $delegations,
+        ]);
     }
 }

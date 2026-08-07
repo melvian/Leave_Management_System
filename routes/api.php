@@ -23,19 +23,31 @@ Route::post('/overtime-records',       [OvertimeRecordApiController::class, 'sto
 Route::put('/overtime-records/{id}',   [OvertimeRecordApiController::class, 'update']);
 Route::delete('/overtime-records/{id}',[OvertimeRecordApiController::class, 'destroy']);
 
-Route::get('/line/balance',         [App\Http\Controllers\Api\LineController::class, 'balance']);
-Route::get('/line/my-leaves',       [App\Http\Controllers\Api\LineController::class, 'myLeaves']);
-Route::get('/line/my-overtime',     [App\Http\Controllers\Api\LineController::class, 'myOvertime']);
-Route::get('/line/user-id',         [App\Http\Controllers\Api\LineController::class, 'getUserId']);
-Route::get('/line/hr',              [App\Http\Controllers\Api\LineController::class, 'getHrLineId']);
-Route::get('/line/manager',         [App\Http\Controllers\Api\LineController::class, 'getManagerLineId']);
-Route::get('/line/pending-leaves',  [App\Http\Controllers\Api\LineController::class, 'PendingLeaves']);
-Route::get('/line/pending-overtime',[App\Http\Controllers\Api\LineController::class, 'PendingOvertime']);
-Route::post('/line/clock-in',       [App\Http\Controllers\Api\LineController::class, 'clockIn']);
-Route::post('/line/clock-out',      [App\Http\Controllers\Api\LineController::class, 'clockOut']);
-Route::post('/line/leave-submit',   [App\Http\Controllers\Api\LineController::class, 'lineLeaveSubmit']);
-Route::post('/line/leave-approve',  [App\Http\Controllers\Api\LineController::class, 'lineApprove']);
-Route::post('/line/leave-reject',   [App\Http\Controllers\Api\LineController::class, 'lineReject']);
-Route::post('/line/overtime-submit',[App\Http\Controllers\Api\LineController::class, 'lineOvertimeSubmit']); 
-Route::post('/line/overtime-confirm', [App\Http\Controllers\Api\LineController::class, 'lineOvertimeConfirm']);
+// Line Attendance
+Route::get('/line/user-id',   [App\Http\Controllers\Api\LineController::class, 'getUserId']);
+Route::post('/line/clock-in', [App\Http\Controllers\Api\LineController::class, 'clockIn']);
+Route::post('/line/clock-out',[App\Http\Controllers\Api\LineController::class, 'clockOut']);
+
+// Line Leave
+Route::get('/line/balance',       [App\Http\Controllers\Api\LineController::class, 'balance']);
+Route::get('/line/my-leaves',     [App\Http\Controllers\Api\LineController::class, 'myLeaves']);
+Route::get('/line/hr',            [App\Http\Controllers\Api\LineController::class, 'getHrLineId']);
+Route::get('/line/manager',       [App\Http\Controllers\Api\LineController::class, 'getManagerLineId']);
+Route::get('/line/pending-leaves',[App\Http\Controllers\Api\LineController::class, 'PendingLeaves']);
+Route::post('/line/leave-submit', [App\Http\Controllers\Api\LineController::class, 'lineLeaveSubmit']);
+Route::post('/line/leave-approve',[App\Http\Controllers\Api\LineController::class, 'lineApprove']);
+Route::post('/line/leave-reject', [App\Http\Controllers\Api\LineController::class, 'lineReject']);
+
+// Line Overtime
+Route::get('/line/my-overtime',      [App\Http\Controllers\Api\LineController::class, 'myOvertime']);
+Route::get('/line/pending-overtime', [App\Http\Controllers\Api\LineController::class, 'PendingOvertime']);
+Route::post('/line/overtime-submit', [App\Http\Controllers\Api\LineController::class, 'lineOvertimeSubmit']); 
+Route::post('/line/overtime-confirm',[App\Http\Controllers\Api\LineController::class, 'lineOvertimeConfirm']);
 Route::post('/line/overtime-reject', [App\Http\Controllers\Api\LineController::class, 'lineOvertimeReject']);
+
+// Line Delegation
+Route::get('/line/my-profile',        [App\Http\Controllers\Api\LineController::class, 'myProfile']);
+Route::get('/line/my-delegations',     [App\Http\Controllers\Api\LineController::class, 'myDelegations']);
+Route::get('/line/employee-by-no',    [App\Http\Controllers\Api\LineController::class, 'employeeByNo']);
+Route::post('/line/delegation-set',   [App\Http\Controllers\Api\LineController::class, 'lineSetDelegation']);
+Route::post('/line/delegation-revoke',[App\Http\Controllers\Api\LineController::class, 'lineRevokeDelegation']);
