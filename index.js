@@ -1525,6 +1525,480 @@ async function handleMyOvertime(event, userId) {
     }
 }
 
+// ── Delegation flow ──────────────────────────────
+async function handleDelegationStart(event,userId){
+    console.log('LARAVEL_API:', process.env.LARAVEL_API);
+    //Is user a manager
+    try {
+        const res = await axios.get(
+            `${process.env.LARAVEL_API}/line/my-profile`,
+            {params:{line_user_id: userId}}
+        );
+
+        console.log('my-profile response:', res.data);
+
+        if (!res.data.success) {
+            return client.replyMessage({
+                replyToken: event.replyToken,
+                messages: [{ type: 'text',
+                    text: '❌ 找不到您的員工帳號。' }]
+            });
+        }
+
+        if (res.data.role !== '部門主管') {
+            return client.replyMessage({
+                replyToken: event.replyToken,
+                messages: [{ type: 'text',
+                    text: '❌ 只有部門主管可以設定簽核代理。' }]
+            });
+        }
+
+        userState[userId] = {
+            step:          DELEGATION_STEPS.SELECT_DELEGATE,
+            delegator_id:  res.data.employee_id,
+            delegator_name: res.data.name,
+        };
+
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{ type: 'text',
+                text: '👤 設定簽核代理\n\n請輸入代理人的員工編號\n（例如：E00068）\n\n輸入「取消」可隨時取消' }]
+        });
+
+    } catch (err) {
+        console.error('Delegation start error:', err.message);
+        console.error('Full error:', err);
+        console.error('Stack:', err.stack);
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{ type: 'text', text: '❌ 發生錯誤，請稍後再試。' }]
+        });
+    }
+}
+
+async function handleDelegationFlow(event, userId, text) {
+    const state = userState[userId];
+    if (!state) return null;
+
+    if (state.step === DELEGATION_STEPS.SELECT_DELEGATE) {
+        return handleDelegateEmployeeNo(event, userId, text);
+    }
+    if (state.step === DELEGATION_STEPS.REASON) {
+        if (text.trim() === '略過') {
+            userState[userId].reason='';
+            return handleDelegationReason(event, userId, '');
+        }
+        return handleDelegationReason(event, userId, text);
+    }
+    return null;
+}
+
+async function handleDelegateEmployeeNo(event, userId, text) {
+    const empNo = text.trim().toUpperCase();
+
+    try {
+        // Look up employee by employee_no
+        const res = await axios.get(
+            `${process.env.LARAVEL_API}/line/employee-by-no`,
+            { params: { employee_no: empNo } }
+        );
+
+        if (!res.data.success) {
+            return client.replyMessage({
+                replyToken: event.replyToken,
+                messages: [{ type: 'text',
+                    text: `❌ 找不到員工編號 ${empNo}，請重新輸入：` }]
+            });
+        }
+
+        // Can't delegate to yourself
+        if (res.data.employee_id === userState[userId].delegator_id) {
+            return client.replyMessage({
+                replyToken: event.replyToken,
+                messages: [{ type: 'text',
+                    text: '❌ 不能將自己設為代理人，請輸入其他員工編號：' }]
+            });
+        }
+
+        userState[userId].delegate_id   = res.data.employee_id;
+        userState[userId].delegate_name = res.data.name;
+        userState[userId].step          = DELEGATION_STEPS.START_DATE;
+
+        const today = new Date().toISOString().split('T')[0];
+
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{
+                type: 'text',
+                text: `✅ 代理人：${res.data.name}（${empNo}）\n\n請選擇代理開始日期：`,
+                quickReply: {
+                    items: [{
+                        type: 'action',
+                        action: {
+                            type: 'datetimepicker',
+                            label: '📅 選擇開始日期',
+                            data: 'action=pick_del_start',
+                            mode: 'date',
+                            initial: today,
+                            min: today,
+                            max: '2027-12-31'
+                        }
+                    }]
+                }
+            }]
+        });
+
+    } catch (err) {
+        console.error('Employee lookup error:', err.message);
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{ type: 'text',
+                text: '❌ 查詢失敗，請重新輸入員工編號：' }]
+        });
+    }
+}
+
+async function handleDelegationReason(event, userId, text) {
+    userState[userId].reason = text.trim() || '（未填寫）';
+    userState[userId].step   = DELEGATION_STEPS.CONFIRM;
+
+    const s = userState[userId];
+
+    const confirmFlex = {
+        type: 'flex',
+        altText: '請確認簽核代理設定',
+        contents: {
+            type: 'bubble',
+            size: 'kilo',
+            header: {
+                type: 'box',
+                layout: 'vertical',
+                contents: [{
+                    type: 'text',
+                    text: '👤 簽核代理確認',
+                    color: '#ffffff',
+                    size: 'md',
+                    weight: 'bold'
+                }],
+                backgroundColor: '#6A1B9A',
+                paddingAll: '16px'
+            },
+            body: {
+                type: 'box',
+                layout: 'vertical',
+                spacing: 'sm',
+                paddingAll: '16px',
+                contents: [
+                    makeRow('委託人', s.delegator_name),
+                    makeRow('代理人', s.delegate_name),
+                    makeRow('開始日期', s.start_date),
+                    makeRow('結束日期', s.end_date),
+                    makeRow('原因', s.reason),
+                    { type: 'separator', margin: 'md' },
+                    {
+                        type: 'box',
+                        layout: 'horizontal',
+                        margin: 'md',
+                        spacing: 'sm',
+                        contents: [
+                            {
+                                type: 'button',
+                                action: {
+                                    type: 'postback',
+                                    label: '✅ 確認',
+                                    data: 'action=submit_delegation',
+                                    displayText: '確認設定代理'
+                                },
+                                style: 'primary',
+                                color: '#6A1B9A',
+                                height: 'sm'
+                            },
+                            {
+                                type: 'button',
+                                action: {
+                                    type: 'postback',
+                                    label: '❌ 取消',
+                                    data: 'action=cancel_delegation',
+                                    displayText: '取消代理設定'
+                                },
+                                style: 'secondary',
+                                height: 'sm'
+                            }
+                        ]
+                    }
+                ]
+            },
+            footer: {
+                type: 'box',
+                layout: 'vertical',
+                contents: [{
+                    type: 'text',
+                    text: `代理期間 ${s.delegate_name} 將擁有您的審核權限`,
+                    size: 'xs',
+                    color: '#aaaaaa',
+                    align: 'center',
+                    wrap: true
+                }],
+                paddingAll: '8px'
+            }
+        }
+    };
+
+    return client.replyMessage({
+        replyToken: event.replyToken,
+        messages: [confirmFlex]
+    });
+}
+
+async function handleDelegationSubmit(event, userId) {
+    const state = userState[userId];
+
+    if (!state || state.step !== DELEGATION_STEPS.CONFIRM) {
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{ type: 'text',
+                text: '❌ 操作已逾時，請重新輸入「設定代理」。' }]
+        });
+    }
+
+    try {
+        const res = await axios.post(
+            `${process.env.LARAVEL_API}/line/delegation-set`,
+            {
+                line_user_id: userId,
+                delegate_id:  state.delegate_id,
+                start_date:   state.start_date,
+                end_date:     state.end_date,
+                reason:       state.reason,
+            }
+        );
+
+        delete userState[userId];
+
+        if (res.data.success) {
+            return client.replyMessage({
+                replyToken: event.replyToken,
+                messages: [{ type: 'text',
+                    text: `✅ 簽核代理已設定！\n\n代理人：${state.delegate_name}\n期間：${state.start_date} ~ ${state.end_date}\n\n代理期間，${state.delegate_name} 將可代您審核請假與加班申請。` }]
+            });
+        } else {
+            return client.replyMessage({
+                replyToken: event.replyToken,
+                messages: [{ type: 'text',
+                    text: `❌ 設定失敗：${res.data.message}` }]
+            });
+        }
+
+    } catch (err) {
+        console.error('Delegation submit error:', err.message);
+        delete userState[userId];
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{ type: 'text',
+                text: '❌ 設定失敗，請稍後再試。' }]
+        });
+    }
+}
+
+async function handleMyDelegation(event, userId) {
+    try {
+        const res = await axios.get(
+            `${process.env.LARAVEL_API}/line/my-delegations`,
+            { params: { line_user_id: userId } }
+        );
+
+        const d = res.data;
+
+        if (!d.success) {
+            return client.replyMessage({
+                replyToken: event.replyToken,
+                messages: [{ type: 'text', text: `❌ ${d.message}` }]
+            });
+        }
+
+        if (!d.delegations || d.delegations.length === 0) {
+            return client.replyMessage({
+                replyToken: event.replyToken,
+                messages: [{ type: 'text',
+                    text: '目前沒有有效的簽核代理設定。\n\n輸入「設定代理」可新增代理。' }]
+            });
+        }
+
+        const bubbles = d.delegations.map(del => ({
+            type: 'bubble',
+            size: 'kilo',
+            header: {
+                type: 'box',
+                layout: 'vertical',
+                contents: [{
+                    type: 'text',
+                    text: del.is_active_now ? '🟢 代理中' : '⏳ 待生效',
+                    color: '#ffffff',
+                    size: 'sm',
+                    weight: 'bold'
+                }],
+                backgroundColor: del.is_active_now ? '#198754' : '#6A1B9A',
+                paddingAll: '12px'
+            },
+            body: {
+                type: 'box',
+                layout: 'vertical',
+                spacing: 'sm',
+                paddingAll: '12px',
+                contents: [
+                    makeRow('代理人', del.delegate_name),
+                    makeRow('期間', `${del.start_date} ~ ${del.end_date}`),
+                    makeRow('原因', del.reason || '—'),
+                    { type: 'separator', margin: 'md' },
+                    {
+                        type: 'button',
+                        action: {
+                            type: 'postback',
+                            label: '❌ 撤銷此代理',
+                            data: `action=revoke_delegation&delegation_id=${del.id}&delegate_name=${encodeURIComponent(del.delegate_name)}`,
+                            displayText: `撤銷 ${del.delegate_name} 的代理`
+                        },
+                        style: 'secondary',
+                        height: 'sm',
+                        margin: 'md'
+                    }
+                ]
+            }
+        }));
+
+        const contents = bubbles.length === 1
+            ? bubbles[0]
+            : { type: 'carousel', contents: bubbles };
+
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [
+                { type: 'text', text: '您目前的簽核代理設定：' },
+                { type: 'flex', altText: '簽核代理設定', contents }
+            ]
+        });
+
+    } catch (err) {
+        console.error('My delegation error:', err.message);
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{ type: 'text', text: '❌查詢失敗，請稍後再試。' }]
+        });
+    }
+}
+
+async function handleDelStartPicked(event, userId, date) {
+    if (!userState[userId]) {
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{ type: 'text',
+                text: '操作已逾時，請重新輸入「設定代理」。' }]
+        });
+    }
+
+    userState[userId].start_date = date;
+    userState[userId].step       = DELEGATION_STEPS.END_DATE;
+
+    return client.replyMessage({
+        replyToken: event.replyToken,
+        messages: [{
+            type: 'text',
+            text: `✅ 開始日期：${date}\n\n請選擇代理結束日期：`,
+            quickReply: {
+                items: [{
+                    type: 'action',
+                    action: {
+                        type: 'datetimepicker',
+                        label: '📅 選擇結束日期',
+                        data: 'action=pick_del_end',
+                        mode: 'date',
+                        initial: date,
+                        min: date,
+                        max: '2027-12-31'
+                    }
+                }]
+            }
+        }]
+    });
+}
+
+
+async function handleDelEndPicked(event, userId, date) {
+    if (!userState[userId]) {
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{ type: 'text',
+                text: '操作已逾時，請重新輸入「設定代理」。' }]
+        });
+    }
+
+    const startDate = new Date(userState[userId].start_date);
+    const endDate   = new Date(date);
+
+    if (endDate < startDate) {
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{
+                type: 'text',
+                text: '❌ 結束日期不能早於開始日期，請重新選擇：',
+                quickReply: {
+                    items: [{
+                        type: 'action',
+                        action: {
+                            type: 'datetimepicker',
+                            label: '📅 重新選擇結束日期',
+                            data: 'action=pick_del_end',
+                            mode: 'date',
+                            initial: userState[userId].start_date,
+                            min: userState[userId].start_date,
+                            max: '2027-12-31'
+                        }
+                    }]
+                }
+            }]
+        });
+    }
+
+    userState[userId].end_date = date;
+    userState[userId].step     = DELEGATION_STEPS.REASON;
+
+    return client.replyMessage({
+        replyToken: event.replyToken,
+        messages: [{ type: 'text',
+            text: `✅ 結束日期：${date}\n\n請輸入代理原因（例如：出差、請假）\n\n或直接輸入「略過」跳過此步驟：` }]
+    });
+}
+
+
+async function handleRevokeDelegation(event, userId, delegationId, delegateName) {
+    try {
+        const res = await axios.post(
+            `${process.env.LARAVEL_API}/line/delegation-revoke`,
+            {
+                line_user_id:  userId,
+                delegation_id: delegationId,
+            }
+        );
+
+        const msg = res.data.success
+            ? `✅ 已撤銷 ${delegateName} 的簽核代理`
+            : `❌ 撤銷失敗：${res.data.message}`;
+
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{ type: 'text', text: msg }]
+        });
+
+    } catch (err) {
+        console.error('Revoke delegation error:', err.message);
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{ type: 'text',
+                text: '❌ 操作失敗，請稍後再試。' }]
+        });
+    }
+}
+
 // ── Helper: build a row for Flex Message body ─────
 function makeRow(label, value) {
     return {
@@ -1572,6 +2046,7 @@ async function handlePostback(event) {
     const leaveType = decodeURIComponent(params.get('leave_type') || '');
     const userId   = event.source.userId;
 
+    // Leave handler
     if (action === 'approve') {
         return handleLineApprove(event, leaveId, empName, leaveType);
     }
@@ -1627,6 +2102,7 @@ async function handlePostback(event) {
         });
     }
 
+    // Overtime handler
     if (action === 'pick_ot_start') {
         const datetime = event.postback.params.datetime;
         return handleOtStartPicked(event, userId, datetime);
@@ -1672,6 +2148,47 @@ async function handlePostback(event) {
         const overtimeId = params.get('overtime_id');
         const empName = decodeURIComponent(params.get('employee_name') || '');
         return handleOvertimeReject(event, overtimeId, empName);
+    }
+
+    // Delegation handler
+    if (action === 'pick_del_start') {
+        const date = event.postback.params.date;
+        return handleDelStartPicked (event, userId, date);
+    }
+
+    if (action === 'pick_del_end') {
+        const date = event.postback.params.date;
+        return handleDelEndPicked (event, userId, date);
+    }
+
+    if (action === 'submit_delegation') {
+        return handleDelegationSubmit (event, userId);
+    }
+
+    if (action === 'cancel_delegation') {
+        delete userState[userId];
+        return client.replyMessage({
+            replyToken: event,replyToken,
+            messages: [{ type: 'text', text: '已取消代理設定。'}]
+        });
+    }
+
+    if (action === 'revoke_delegation') {
+        const delegationId = params.get('delegation_id');
+        const delegateName = decodeURIComponent(params.get('delegate_name'));
+        return handleRevokeDelegation(event, userId, delegationId, delegateName);
+    }
+
+    if (action === 'start_delegation_flow') {
+        return handleDelegationStart(event, userId);
+    }
+
+    if (action === 'skip_delegation') {
+        return client.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{ type: 'text',
+                text: '好的，若之後需要設定代理，可隨時輸入「設定代理」。' }]
+        });
     }
 
     return null;
@@ -1913,7 +2430,6 @@ mqttClient.on('message', async (topic, payload) => {
 
 // ── Push notification helpers ─────────────────────
 async function pushLeaveApprovedNotification(data) {
-    // Look up employee's Line user ID from Laravel
     try {
         const res = await axios.get(
             `${process.env.LARAVEL_API}/line/user-id`,
@@ -1934,6 +2450,47 @@ async function pushLeaveApprovedNotification(data) {
         });
 
         console.log(`Pushed leave approved to employee ${data.employee_id}`);
+
+        // ── If approved person is a manager, ask about delegation ──
+        if (res.data.role === '部門主管') {
+            // Small delay so messages don't stack instantly
+            setTimeout(async () => {
+                try {
+                    await client.pushMessage({
+                        to: res.data.line_user_id,
+                        messages: [{
+                            type: 'text',
+                            text: `📋 您即將請假（${data.start_date} ~ ${data.end_date}）\n\n是否需要設定簽核代理人？代理人可在您請假期間代為審核請假與加班申請。`,
+                            quickReply: {
+                                items: [
+                                    {
+                                        type: 'action',
+                                        action: {
+                                            type: 'postback',
+                                            label: '✅ 設定代理人',
+                                            data: 'action=start_delegation_flow',
+                                            displayText: '設定簽核代理人'
+                                        }
+                                    },
+                                    {
+                                        type: 'action',
+                                        action: {
+                                            type: 'postback',
+                                            label: '❌ 不需要',
+                                            data: 'action=skip_delegation',
+                                            displayText: '不需要設定代理'
+                                        }
+                                    }
+                                ]
+                            }
+                        }]
+                    });
+                } catch (err) {
+                    console.error('Push delegation prompt error:', err.message);
+                }
+            }, 1500);
+        }
+
     } catch (err) {
         console.error('Push approved error:', err.message);
     }
