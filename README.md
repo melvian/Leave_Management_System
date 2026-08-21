@@ -1,58 +1,265 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# 企業內部員工差勤管理系統
+**Employee Attendance & Leave Management System**
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+A full-stack internal HR system built during an internship at 大愛電視台 數位發展中心.
+Integrates a Laravel web application, a Line Bot, and a Python desktop monitor through MQTT messaging.
 
-## About Laravel
+---
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+## System Overview
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+The system consists of three interconnected sub-systems:
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+| Sub-system | Tech Stack | Description |
+|---|---|---|
+| **Web System** | PHP 8.3 + Laravel 13 + SQLite + Blade | Core application for all HR operations |
+| **Line Bot Server** | Node.js + Express + @line/bot-sdk | Mobile access via Line for employees and managers |
+| **Desktop Monitor** | Python 3.12 + tkinter + paho-mqtt | Real-time attendance dashboard for HR/admin |
 
-## Learning Laravel
+All three sub-systems communicate through a **Mosquitto MQTT Broker (localhost:1883)**.
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+---
 
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+## Features
 
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
+### For All Employees
+- Clock in / clock out with automatic late and early-leave detection
+- Apply for leave (全天 / 小時制) with real-time balance display
+- Record overtime and view compensatory hours balance
+- Personal attendance calendar (3-month color-coded view)
+- Monthly attendance statistics
+- All features also accessible via **Line Bot**
 
-## Agentic Development
+### For Department Managers
+- Review and approve/reject leave requests from their department
+- Confirm or reject overtime records
+- Set approval delegates during absences
+- Receive Line push notifications for new requests; approve directly from Line
 
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
+### For HR (人資部)
+- Final approval for leave requests over 3 days
+- Employee management (create, edit, deactivate accounts)
+- Attendance management with manual clock-time correction
+- Export daily attendance to Excel (5 worksheets)
+- Holiday management (add/delete, with 2026 Taiwan national holidays pre-loaded)
+- Department management and shift settings
 
-```bash
-composer require laravel/boost --dev
+### For System Admin (系統管理者)
+- All HR features
+- Password reset for any employee
+- Role assignment (with restrictions per department)
 
-php artisan boost:install
+---
+
+## Role Hierarchy
+
+| Role | Code | Key Permissions |
+|---|---|---|
+| 一般員工 | `employee` | Clock in/out, apply leave, record overtime |
+| 部門主管 | `manager` | Above + approve/reject own department's requests |
+| 人資部 | `hr` | Above + employee management, attendance management, holiday management |
+| 系統管理者 | `admin` | Full system access + password reset + role assignment |
+
+---
+
+## Approval Flow
+- Leave ≤ 3 days: Employee → Manager → ✅ Approved
+- Leave > 3 days: Employee → Manager → HR → ✅ Approved
+- Overtime: Employee → Manager → ✅ Confirmed (compensatory hours auto-added)
+
+---
+
+## Tech Stack
+
+| Category | Technology |
+|---|---|
+| Backend Framework | PHP 8.3 + Laravel 13 |
+| Template Engine | Blade (Laravel built-in) |
+| Database | SQLite |
+| Frontend | Bootstrap 5.3.3 + Bootstrap Icons 1.11.3 (CDN) |
+| Dev Environment | WSL2 (Ubuntu) + VS Code + `php artisan serve` |
+| Version Control | Git + GitHub |
+| Excel Export | `maatwebsite/excel` |
+| MQTT Broker | Mosquitto `localhost:1883` |
+| Line Bot Server | Node.js + Express + `@line/bot-sdk` + `axios` + `mqtt` |
+| Desktop Monitor | Python 3.12 + `tkinter` + `paho-mqtt` + `pystray` + `plyer` |
+| Line Integration | Line Messaging API + ngrok HTTPS webhook |
+
+---
+
+## Database
+
+SQLite — `leave-management.sqlite` — 7 tables:
+
+| Table | Description |
+|---|---|
+| `employees` | All users, roles, line_user_id binding |
+| `leave_requests` | Leave applications with approval routing |
+| `overtime_records` | Overtime submissions and confirmations |
+| `attendance_records` | Daily clock-in/out records with UNIQUE(employee_id, date) |
+| `delegations` | Approval delegation settings |
+| `holidays` | Company holidays (public / typhoon / other) |
+| `shift_settings` | Per-department shift times and late tolerance |
+
+---
+
+## MQTT Event Topics
+
+| Topic | Trigger |
+|---|---|
+| `attendance/clock-in` | Employee clocks in |
+| `attendance/clock-out` | Employee clocks out |
+| `leave/submitted` | Leave request submitted |
+| `leave/approved` | Leave request approved |
+| `leave/rejected` | Leave request rejected |
+| `overtime/submitted` | Overtime record submitted |
+| `overtime/confirmed` | Overtime record confirmed |
+| `overtime/rejected` | Overtime record rejected |
+| `delegation/set` | Approval delegate set |
+| `delegation/revoked` | Approval delegate revoked |
+
+---
+
+## Line Bot Commands
+
+| Command | Function |
+|---|---|
+| `上班` / `下班` | Clock in / clock out |
+| `請假` | Start guided leave application flow |
+| `加班` | Start guided overtime recording flow |
+| `我的假期` | View leave balance |
+| `我的請假` | View recent leave records (Flex Carousel) |
+| `我的加班` | View recent overtime records |
+| `待審` | View pending approvals (managers/HR) |
+| `設定代理` | Set approval delegate |
+| `我的代理` | View active delegations |
+| `我的LineID` | Get your Line User ID for HR binding |
+| `說明` | Show command list |
+
+---
+
+## Repository Structure
+```
+Leave_Management_System/
+├── app/
+│   ├── Enums/
+│   ├── Http/Controllers/
+│   ├── Models/
+│   └── Services/MqttService.php
+├── routes/
+│   ├── web.php
+│   └── api.php
+├── resources/views/
+├── database/
+│   └── seeders/HolidaySeeder.php
+└── docs/
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+> **Line Bot** is maintained in a separate branch: `linebot`
+> **Desktop Monitor** is maintained in a separate branch: `attendance`
 
-## Contributing
+---
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+## Getting Started
 
-## Code of Conduct
+### Prerequisites
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+- PHP 8.3 + Composer
+- Node.js 18+
+- Python 3.12 with venv
+- Mosquitto MQTT broker
+- WSL2 (Ubuntu) for the Laravel server
 
-## Security Vulnerabilities
+### 1. Laravel Web System
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+```bash
+git clone https://github.com/melvian/Leave_Management_System.git
+cd Leave_Management_System
 
-## License
+composer install
+cp .env.example .env
+php artisan key:generate
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+# Database is SQLite — path is set in .env
+php artisan migrate
+php artisan db:seed --class=HolidaySeeder
+
+php artisan serve
+```
+
+Access at: `http://localhost:8000`
+
+### 2. Mosquitto MQTT Broker
+
+```bash
+# Install (Ubuntu/WSL2)
+sudo apt install mosquitto mosquitto-clients
+
+# Start broker
+mosquitto -v
+```
+
+### 3. Line Bot Server
+
+```bash
+git checkout linebot
+cd ~/linebot
+
+npm install
+cp .env.example .env
+# Fill in LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET
+# MQTT_BROKER=mqtt://localhost:1883
+# LARAVEL_API=http://127.0.0.1:8000/api
+
+node index.js
+```
+
+In Windows CMD, run ngrok and set the HTTPS URL as your Line webhook:
+```cmd
+ngrok http 3000
+```
+
+### 4. Python Desktop Monitor
+
+```bash
+git checkout attendance
+cd C:\Users\...\attendance-monitor
+
+# Windows CMD (not WSL2)
+venv\Scripts\activate
+python app.py
+```
+
+---
+
+## Documentation
+
+All technical documents are in the `/docs` folder:
+
+| File | Description |
+|---|---|
+| `01_系統技術規格書_Tech_Spec.pdf` | Full technical specification (PRD) |
+| `flowcharts/登入主選單流程圖.png` | Login & main menu flow |
+| `flowcharts/審核管理流程圖.png` | Approval management flow |
+| `flowcharts/組織管理流程圖.png` | HR organization management flow |
+| `flowcharts/打卡記錄流程圖.png` | Attendance clock-in/out flow |
+| `flowcharts/全系統整合流程圖.png` | Full system integration flow (MQTT + Line + Monitor) |
+| `flowcharts/系統架構圖.png` | System architecture diagram |
+| `flowcharts/MVC架構圖.png` | Laravel MVC architecture diagram |
+
+---
+
+## Known Limitations
+
+- System runs on local development environment only (WSL2 + Windows)
+- Line Bot webhook URL changes every time ngrok restarts
+- Line Bot conversation state (`userState`) is in-memory and resets on restart
+- API routes have no session authentication (identity resolved via `line_user_id`)
+- Python desktop monitor requires Windows (pystray does not support WSL2)
+
+---
+
+## Developed By
+
+Internship project at **大愛電視台 數位發展中心 — 內部系統維運組**
+Intern: Melvian 黃美媛 | Duration: 8 weeks (Summer 2026)
